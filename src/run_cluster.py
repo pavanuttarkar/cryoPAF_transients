@@ -57,10 +57,44 @@ if __name__ == "__main__":
                 
     print(len(fredda_cands['secs']), "candidates ->", labels.max() + 1, "clusters,", (labels == -1).sum(), "noise")
 
-    for k in range(labels.max() + 1):                                 # best candidate per cluster
-        idx = np.where(labels == k)[0]
-        b = idx[np.argmax(fredda_cands['sn'][idx])]
-        print(f"S/N {fredda_cands['sn'][b]:.2f}  t {fredda_cands['secs'][b]:.4f}  "
-              f"DM {fredda_cands['dm'][b]:.2f}  box {fredda_cands['boxcar'][b]:.0f}  n {len(idx)}")
- 
+    valid = np.flatnonzero(labels >= 0)                                        # ignore noise (-1)
+    order = valid[np.lexsort((fredda_cands['sn'][valid], labels[valid]))]      
 
+    # last row of each label block = highest S/N in that cluster
+    uniq, first, counts = np.unique(labels[order], return_index=True, return_counts=True)
+    best = order[first + counts - 1]
+
+    np.savetxt("best_per_cluster.txt",
+               np.column_stack([
+                                fredda_cands['sn'][best],
+                                fredda_cands['sampno'][best],
+                                fredda_cands['secs'][best],
+                                fredda_cands['boxcar'][best],
+                                fredda_cands['idt'][best],
+                                fredda_cands['dm'][best],
+                                fredda_cands['beamno'][best],
+                                fredda_cands['mjd'][best],
+                                uniq,]),
+               fmt="%s",#["%d", "%.2f", "%.4f", "%.2f", "%.0f", "%d"],
+               header="cluster  sn  secs  dm  boxcar  n")
+    """
+    ("sn",     "f8"),
+    ("sampno", "i8"),
+    ("secs",   "f8"),
+    ("boxcar", "i8"),
+    ("idt",    "i8"),
+    ("dm",     "f8"),
+    ("beamno", "i8"),
+    ("mjd",    "f8"),
+    ("cls",    "f8"),
+    """
+    noise = np.flatnonzero(labels < 0)                                         # noise points (-1)
+
+    np.savetxt("noise_candidates.txt",
+               np.column_stack([noise,
+                                fredda_cands['sn'][noise],
+                                fredda_cands['secs'][noise],
+                                fredda_cands['dm'][noise],
+                                fredda_cands['boxcar'][noise]]),
+               fmt=["%d", "%.2f", "%.4f", "%.2f", "%.0f"],
+               header="index  sn  secs  dm  boxcar")

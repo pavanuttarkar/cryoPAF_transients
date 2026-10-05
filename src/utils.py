@@ -50,3 +50,70 @@ def read_fil(path, nsamples=None, start=0):
     data    =   (data - np.nanmean(data, axis=1)[:,None])/np.std(data, axis=1)[:,None]
     return hdr, data
 
+
+def _excess_kurtosis(x, axis=-1):
+    mu = np.nanmean(x, axis=axis, keepdims=True)
+    d = x - mu
+    m2 = np.nanmean(d**2, axis=axis)
+    m4 = np.nanmean(d**4, axis=axis)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return m4 / m2**2 - 3.0
+
+
+def _mad_sigma(x):
+    med = np.nanmedian(x)
+    return 1.4826 * np.nanmedian(np.abs(x - med))
+
+def kurtosis_excise(data, nsigma=4.0, fill="nan", inplace=False):
+    """
+    Fast whole-channel RFI excision using excess kurtosis.
+
+    Parameters
+    ----------
+    data : ndarray (nchan, ntime), as returned by read_fil.
+    nsigma : threshold in robust (MAD) sigmas from the median channel kurtosis.
+    fill : "noise" (N(0,1), default), "zero" or "nan".
+    inplace : modify `data` directly (avoids a full copy).
+    seed : RNG seed for the noise fill.
+
+    Returns
+    -------
+    clean : ndarray (nchan, ntime)
+    bad_chan : bool ndarray (nchan,), True for excised channels.
+    """
+    n = data.shape[1]
+
+    # FMA is faster, so using einsym - Raw moments via einsum: single pass each, no large temporaries
+    # beyond x^2.
+    x2 = data * data
+    mu = data.sum(axis=1) / n
+    m2r = np.einsum("ij,ij->i", data, data) / n        
+    m3r = np.einsum("ij,ij->i", x2, data) / n          
+    m4r = np.einsum("ij,ij->i", x2, x2) / n            
+    del x2
+
+    # Convert to central moments
+    m2 = m2r - mu**2
+    m4 = m4r - 4 * mu * m3r + 6 * mu**2 * m2r - 3 * mu**4
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        k = m4 / m2**2 - 3.0
+
+    # Robust thresholding across channels
+    good        = np.isfinite(k)
+    med         = np.median(k[good])
+    sigma       = 1.4826 * np.median(np.abs(k[good] - med))
+    bad_chan    = ~good | (np.abs(k - med) > nsigma * sigma)
+
+    # Fill only the flagged channels
+    clean       = data if inplace else data.copy()
+    idx         = np.flatnonzero(bad_chan)
+    if idx.size:
+        if fill == "zero":
+            clean[idx] = 0.0
+        elif fill == "nan":
+            clean[idx] = np.nan
+        else:
+            raise ValueError("fill must be 'noise', 'zero' or 'nan'")
+
+    return clean, bad_chan
