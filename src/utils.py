@@ -50,6 +50,8 @@ def read_fil(path, nsamples=None, start=0):
     data    =   (data - np.nanmean(data, axis=1)[:,None])/np.std(data, axis=1)[:,None]
     return hdr, data
 
+def get_freqs(hdr):
+    return hdr["fch1"] + hdr["foff"] * np.arange(hdr["nchans"])
 
 def _excess_kurtosis(x, axis=-1):
     mu = np.nanmean(x, axis=axis, keepdims=True)
