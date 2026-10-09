@@ -41,7 +41,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from header import CAND_DTYPE, CAND_RADEC_DTYPE, BEAM_DTYPE
-from header import CATALOG_DTYPE, MATCH_EXTRA_DTYPE
+from header import CATALOG_DTYPE, MATCH_EXTRA_DTYPE, CAND_DTYPE_CLS
 
 
 def load_candidates(path: str) -> np.ndarray:
@@ -51,7 +51,7 @@ def load_candidates(path: str) -> np.ndarray:
 
     Lines starting with '#' are treated as comments/header and skipped.
     """
-    return np.loadtxt(path, comments="#", dtype=CAND_DTYPE)
+    return np.loadtxt(path, comments="#", dtype=CAND_DTYPE_CLS)
 
 
 def load_candidates_with_radec(path: str) -> np.ndarray:
@@ -203,6 +203,7 @@ def crossmatch(
 
 def save_csv(path: str, result: np.ndarray):
     header = ",".join(result.dtype.names)
+    header = "#"+header
     fmt = []
     for name in result.dtype.names:
         kind = result.dtype[name].kind

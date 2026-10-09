@@ -3,13 +3,11 @@ import numpy as np
 from header import *
 from sklearn.cluster import DBSCAN
  
- 
 def load_fredda(path, dt):
     # columns: S/N, sampno, secs, boxcar, idt, dm, beamno, mjd
     fredda_cands = np.loadtxt(path, dtype=CAND_DTYPE)
     disp = dt / np.median(fredda_cands['dm'][fredda_cands['idt'] > 0] / (fredda_cands['idt'][fredda_cands['idt'] > 0]))            # sweep [s per DM unit]
     return fredda_cands, disp
- 
  
 def cluster_fdmt(fredda_cands, 
                  dt, 
@@ -25,8 +23,27 @@ def cluster_fdmt(fredda_cands,
     return DBSCAN(eps=eps, 
                 min_samples=min_samples, 
                 metric="precomputed").fit_predict(dist)
- 
- 
+"""
+
+
+
+def normalise_fdmt(fredda_cands, dt, disp, sigma=None):
+    # sigma: fixed tolerance in seconds (default: one sample)
+    if sigma is None:
+        sigma = dt
+    return np.column_stack([fredda_cands['secs'] / sigma,
+                            fredda_cands['dm'] * disp / sigma])
+
+
+def cluster_fdmt(fredda_cands,
+                       dt,
+                       disp,
+                       eps=1.0,
+                       min_samples=2,
+                       sigma=None):
+    X = normalise_fdmt(fredda_cands, dt, disp, sigma)
+    return DBSCAN(eps=eps, min_samples=min_samples).fit_predict(X)
+""" 
 if __name__ == "__main__":
 
     p = argparse.ArgumentParser(description="Cluster FREDDA/FDMT candidates.")

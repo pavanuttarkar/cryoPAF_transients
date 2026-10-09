@@ -3,12 +3,12 @@ import numpy as np
 # Raw single-pulse candidate file:
 CAND_DTYPE_CLS = np.dtype([
     ("sn",     "f8"),
-    ("sampno", "i8"),
+    ("sampno", "f8"),
     ("secs",   "f8"),
-    ("boxcar", "i8"),
-    ("idt",    "i8"),
+    ("boxcar", "f8"),
+    ("idt",    "f8"),
     ("dm",     "f8"),
-    ("beamno", "i8"),
+    ("beamno", "f8"),
     ("mjd",    "f8"),
     ("cls",    "f8"),
 ])
