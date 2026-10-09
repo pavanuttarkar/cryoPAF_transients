@@ -1,29 +1,3 @@
-#!/usr/bin/env python3
-"""
-Interactive FREDDA (FDMT) candidate plotter.
-
-FREDDA writes candidate text files (*.cand / *.fil.cand) with columns:
-    S/N, sampno, secs_from_start, boxcar, idt, dm, beamno, mjd
-Header ('#') lines are parsed if they name the columns; otherwise that
-default order is assumed.
-
-Usage:
-    python fredda_plotter.py candidates.fil.cand [more files...]
-    python fredda_plotter.py --demo
-
-Controls:
-    left click        inspect the brightest candidate under the cursor
-    right-drag        box-select candidates (time / DM)
-    toolbar           normal zoom / pan (left click inspects only when no tool is active)
-    sliders           min S/N and DM range
-    radio / checks    pick a beam, toggle boxcar widths
-    keys              e = export selected (or all visible) to CSV
-                      x = clear selection
-                      a = reset all filters
-                      l = toggle log DM axis (matplotlib default)
-
-Requires matplotlib >= 3.5 and numpy.
-"""
 import argparse
 import sys
 
@@ -35,6 +9,19 @@ from matplotlib.widgets import (Button, CheckButtons, RadioButtons,
                                 RangeSlider, RectangleSelector, Slider)
 
 DEFAULT_COLS = ["snr", "sampno", "secs", "boxcar", "idt", "dm", "beam", "mjd"]
+# Clustered file: sn, sampno, secs, boxcar, idt, dm, beamno, mjd, cls
+DEFAULT_COLS_CLS = DEFAULT_COLS + ["cls"]
+CAND_DTYPE_CLS = np.dtype([
+    ("sn",     "f8"),
+    ("sampno", "f8"),
+    ("secs",   "f8"),
+    ("boxcar", "f8"),
+    ("idt",    "f8"),
+    ("dm",     "f8"),
+    ("beamno", "f8"),
+    ("mjd",    "f8"),
+    ("cls",    "f8"),
+])
 MAX_RADIO = 12  # max beams / boxcars to offer as widgets
 
 
@@ -46,7 +33,7 @@ def _parse_header(line):
     toks = [t.strip().lower() for t in line.lstrip("#").split(",")]
     names = []
     for t in toks:
-        if "s/n" in t or "snr" in t:
+        if t in ("sn", "s/n") or "s/n" in t or "snr" in t:
             names.append("snr")
         elif "sampno" in t:
             names.append("sampno")
@@ -62,28 +49,45 @@ def _parse_header(line):
             names.append("beam")
         elif "mjd" in t:
             names.append("mjd")
+        elif t.startswith("cls") or "cluster" in t:
+            names.append("cls")
         else:
             return None
     return names if {"snr", "dm"} <= set(names) else None
 
 
-def load_candidates(paths, tsamp=None):
+def load_candidates(paths, tsamp=None, default_cols=DEFAULT_COLS):
     tables = []
     for p in paths:
         names = None
-        with open(p) as f:
-            for line in f:
-                if line.startswith("#"):
-                    names = _parse_header(line) or names
-                elif line.strip():
-                    break
-        arr = np.loadtxt(p, comments="#", ndmin=2)
+        with open(p, "rb") as f:
+            head = f.read(4096)
+        is_text = True
+        try:
+            head.decode("ascii")
+        except UnicodeDecodeError:
+            is_text = False
+
+        if is_text:
+            with open(p) as f:
+                for line in f:
+                    if line.startswith("#"):
+                        names = _parse_header(line) or names
+                    elif line.strip():
+                        break
+            arr = np.loadtxt(p, comments="#", ndmin=2)
+        else:
+            # raw binary file written with CAND_DTYPE_CLS
+            rec = np.fromfile(p, dtype=CAND_DTYPE_CLS)
+            arr = np.column_stack([rec[n] for n in rec.dtype.names])
+            names = DEFAULT_COLS_CLS
+
         if arr.size == 0:
             print(f"warning: no candidates in {p}", file=sys.stderr)
             continue
         ncol = arr.shape[1]
         if names is None or len(names) != ncol:
-            names = DEFAULT_COLS[:ncol] + [f"col{i}" for i in range(len(DEFAULT_COLS), ncol)]
+            names = default_cols[:ncol] + [f"col{i}" for i in range(len(default_cols), ncol)]
         tables.append({n: arr[:, i] for i, n in enumerate(names)})
     if not tables:
         sys.exit("No candidates loaded.")
@@ -134,13 +138,28 @@ def make_demo(seed=0):
     return finalize({k: np.concatenate(v).astype(float) for k, v in cols.items()})
 
 
+def make_demo_clustered(d):
+    """Fake 'clustered' output: brightest candidate per 0.1 s bin above S/N 9."""
+    sel = np.flatnonzero(d["snr"] > 9)
+    keys = np.round(d["secs"][sel] / 0.1).astype(int)
+    best = []
+    for k in np.unique(keys):
+        grp = sel[keys == k]
+        best.append(grp[np.argmax(d["snr"][grp])])
+    best = np.array(best, dtype=int)
+    c = {k: v[best].copy() for k, v in d.items()}
+    c["cls"] = np.arange(len(best), dtype=float)
+    return finalize(c)
+
+
 # --------------------------------------------------------------------------
 # Plotter
 # --------------------------------------------------------------------------
 class CandPlotter:
     def __init__(self, d, title="FREDDA candidates", min_snr=None, beam=None,
-                 outfile="fredda_selected.csv"):
+                 outfile="fredda_selected.csv", clustered=None):
         self.d = d
+        self.cl = clustered
         self.outfile = outfile
         self.t, self.dm, self.snr = d["secs"] if "secs" in d else d["sampno"], d["dm"], d["snr"]
         self.tlabel = "Time since file start (s)" if "secs" in d else "Sample number"
@@ -156,6 +175,18 @@ class CandPlotter:
         self.msg = ""
         self.beam_sel = beam
         self.min_snr0 = self.snr.min() if min_snr is None else min_snr
+
+        # clustered candidates (overplot)
+        self.show_cl = True
+        self.cur_cl = None
+        self.cl_vis = np.array([], dtype=int)
+        if self.cl is not None:
+            c = self.cl
+            self.clt = c["secs"] if "secs" in c else c["sampno"]
+            self.cldm, self.clsnr = c["dm"], c["snr"]
+            self.clbox = np.rint(c["boxcar"]).astype(int)
+            self.clbeam = np.rint(c["beam"]).astype(int)
+            self.ncl = len(self.clsnr)
 
         self.smin, self.smax = self.snr.min(), self.snr.max()
         self.sclip = max(np.percentile(self.snr, 99.5), self.smin + 1e-6)
@@ -181,6 +212,11 @@ class CandPlotter:
         norm = Normalize(vmin=self.smin, vmax=self.sclip)
         self.sc = self.ax.scatter([], [], c=[], s=[], cmap="viridis", norm=norm,
                                   alpha=0.85, edgecolors="none", picker=6)
+        # clustered candidates: open magenta diamonds on top of the raw candidates
+        self.cl_sc = self.ax.scatter([], [], s=[], marker="D", facecolors="none",
+                                     edgecolors="magenta", linewidths=1.3,
+                                     zorder=4, picker=6,
+                                     label="clustered")
         self.sel_sc = self.ax.scatter([], [], s=70, facecolors="none",
                                       edgecolors="red", linewidths=1.0, zorder=5)
         (self.hl,) = self.ax.plot([], [], "o", ms=16, mfc="none", mec="orange",
@@ -195,6 +231,8 @@ class CandPlotter:
         tp, dp = 0.02 * np.ptp(self.t) + 1e-9, 0.04 * np.ptp(self.dm) + 1e-9
         self.ax.set_xlim(self.t.min() - tp, self.t.max() + tp)
         self.ax.set_ylim(self.dm.min() - dp, self.dm.max() + dp)
+        if self.cl is not None:
+            self.ax.legend(handles=[self.cl_sc], loc="upper right", fontsize=8)
 
         # histograms (StepPatch so they update without cla())
         self.snr_edges = np.linspace(self.smin, self.smax + 1e-6, 60)
@@ -225,7 +263,7 @@ class CandPlotter:
         self.snr_slider.on_changed(self.update)
         self.dm_slider.on_changed(self.update)
 
-        self.radio = self.check = None
+        self.radio = self.check = self.cl_check = None
         if 1 < len(self.beams) <= MAX_RADIO:
             ax_r = fig.add_axes([0.02, 0.58, 0.11, 0.30])
             ax_r.set_title("Beam", fontsize=9)
@@ -239,6 +277,10 @@ class CandPlotter:
             self.check = CheckButtons(ax_c, [str(b) for b in self.boxes],
                                       [True] * len(self.boxes))
             self.check.on_clicked(self.update)
+        if self.cl is not None:
+            ax_k = fig.add_axes([0.02, 0.10, 0.11, 0.07])
+            self.cl_check = CheckButtons(ax_k, ["Clustered"], [True])
+            self.cl_check.on_clicked(self._on_cl_toggle)
 
         ax_b1 = fig.add_axes([0.80, 0.09, 0.08, 0.04])
         ax_b2 = fig.add_axes([0.89, 0.09, 0.08, 0.04])
@@ -277,6 +319,10 @@ class CandPlotter:
         self.beam_sel = None if label == "all" else int(label)
         self.update()
 
+    def _on_cl_toggle(self, _label=None):
+        self.show_cl = bool(self.cl_check.get_status()[0])
+        self.update()
+
     # -- core update --------------------------------------------------------
     def update(self, _=None):
         lo, hi = self.dm_slider.val
@@ -296,6 +342,21 @@ class CandPlotter:
         s = self.selected
         self.sel_sc.set_offsets(np.column_stack((self.t[s], self.dm[s])))
 
+        # clustered overplot: same S/N, DM, boxcar and beam filters
+        if self.cl is not None:
+            mc = (self.clsnr >= self.snr_slider.val) & (self.cldm >= lo) & (self.cldm <= hi)
+            mc &= np.isin(self.clbox, self._active_boxcars())
+            if self.beam_sel is not None:
+                mc &= self.clbeam == self.beam_sel
+            if not self.show_cl:
+                mc[:] = False
+            cv = self.cl_vis = np.flatnonzero(mc)
+            self.cl_sc.set_offsets(np.column_stack((self.clt[cv], self.cldm[cv])))
+            self.cl_sc.set_sizes(self._size(self.clsnr[cv]) * 1.5 + 40)
+            if self.cur_cl is not None and not mc[self.cur_cl]:
+                self.cur_cl, self.detail = None, ""
+                self.hl.set_data([], [])
+
         hs, _e = np.histogram(self.snr[v], self.snr_edges)
         self.snr_st.set_data(np.maximum(hs, 0.5), self.snr_edges)
         self.ax_snr.set_ylim(0.5, max(hs.max(), 1) * 3)
@@ -309,6 +370,8 @@ class CandPlotter:
     def _refresh_info(self):
         v = self.vis
         lines = [f"showing {len(v)} / {self.n}", f"selected {len(self.selected)}"]
+        if self.cl is not None:
+            lines.append(f"clustered {len(self.cl_vis)} / {self.ncl}")
         if len(v):
             lines.append(f"max S/N  {self.snr[v].max():.1f}")
         if self.msg:
@@ -319,19 +382,32 @@ class CandPlotter:
 
     # -- interaction --------------------------------------------------------
     def _on_pick(self, event):
-        if event.artist is not self.sc or event.mouseevent.button != 1:
+        if event.mouseevent.button != 1:
             return
         if self._toolbar_active() or len(event.ind) == 0:
             return
-        idx = self.vis[np.asarray(event.ind)]
-        self.show_candidate(idx[np.argmax(self.snr[idx])])
+        if event.artist is self.cl_sc and self.cl is not None:
+            idx = self.cl_vis[np.asarray(event.ind)]
+            self.show_cluster(idx[np.argmax(self.clsnr[idx])])
+        elif event.artist is self.sc:
+            idx = self.vis[np.asarray(event.ind)]
+            self.show_candidate(idx[np.argmax(self.snr[idx])])
 
     def show_candidate(self, i):
-        self.cur = i
+        self.cur, self.cur_cl = i, None
         self.hl.set_data([self.t[i]], [self.dm[i]])
         row = {k: v[i] for k, v in self.d.items()}
         self.detail = "\n".join(f"{k:>7s} {v:.6g}" for k, v in row.items())
         print("candidate:", ", ".join(f"{k}={v:.6g}" for k, v in row.items()))
+        self._refresh_info()
+        self.fig.canvas.draw_idle()
+
+    def show_cluster(self, i):
+        self.cur_cl, self.cur = i, None
+        self.hl.set_data([self.clt[i]], [self.cldm[i]])
+        row = {k: v[i] for k, v in self.cl.items()}
+        self.detail = "CLUSTERED\n" + "\n".join(f"{k:>7s} {v:.6g}" for k, v in row.items())
+        print("clustered:", ", ".join(f"{k}={v:.6g}" for k, v in row.items()))
         self._refresh_info()
         self.fig.canvas.draw_idle()
 
@@ -388,6 +464,8 @@ class CandPlotter:
             self.clear_selection()
         elif event.key == "a":
             self.reset_filters()
+        elif event.key == "c" and self.cl_check is not None:
+            self.cl_check.set_active(0)  # toggles and triggers _on_cl_toggle
 
 
 # --------------------------------------------------------------------------
@@ -395,6 +473,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="*", help="FREDDA candidate file(s)")
+    ap.add_argument("--clustered", nargs="+", default=None, metavar="FILE",
+                    help="clustered candidate file(s) to overplot "
+                         "(columns: sn sampno secs boxcar idt dm beamno mjd cls)")
     ap.add_argument("--demo", action="store_true", help="use synthetic candidates")
     ap.add_argument("--min-snr", type=float, default=None, help="initial S/N threshold")
     ap.add_argument("--beam", type=int, default=None, help="initial beam filter")
@@ -404,17 +485,23 @@ def main():
                     help="CSV written by the export button / 'e' key")
     args = ap.parse_args()
 
+    cl = None
     if args.demo:
         d, title = make_demo(), "FREDDA candidates (synthetic demo)"
+        cl = make_demo_clustered(d)
     elif args.files:
         d, title = load_candidates(args.files, args.tsamp), ", ".join(args.files)
     else:
         ap.error("give candidate file(s) or --demo")
 
+    if args.clustered:
+        cl = load_candidates(args.clustered, args.tsamp, default_cols=DEFAULT_COLS_CLS)
+        title += "  +  clustered: " + ", ".join(args.clustered)
+
     # Keep a reference: matplotlib only weak-references bound-method callbacks,
     # so if the object is garbage-collected the sliders/buttons stop responding.
     plotter = CandPlotter(d, title=title, min_snr=args.min_snr, beam=args.beam,
-                          outfile=args.output)
+                          outfile=args.output, clustered=cl)
     plt.show()
     del plotter
 
