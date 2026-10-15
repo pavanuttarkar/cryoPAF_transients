@@ -1,10 +1,22 @@
+import os
+import sys
+import time
 import struct
+import logging
+import warnings
 import numpy as np
 from header import *
-import logging
-import time
-import warnings
+
 from numba import njit, prange
+from matplotlib.pyplot import *
+
+
+DM_TOL = 1.0      # pc/cc, max DM difference to call two candidates the same
+SEC_TOL = 0.01    # s, max time difference to call two candidates the same
+
+OUT_DTYPE = np.dtype(CAND_DTYPE_CLS.descr + [("score", "i1")])
+
+
  
 logger = logging.getLogger(__name__)
 
@@ -415,3 +427,249 @@ def start_for_candidate(hdr, cand_sample, dm_cand, window, f_ref=None, pad=False
     if start < 0 and not pad:
         raise ValueError(f"Candidate is too close to file start.")
     return start
+
+
+_ROWS = {
+     5: (-0.24, [67, 68, 69]),
+     4: (-0.32, [52, 53, 54, 55, 56]),
+     3: (-0.40, [51, 30, 31, 32, 33, 57]),
+     2: (-0.48, [50, 29, 14, 15, 16, 34, 58, 70]),
+     1: (-0.56, [49, 28, 13, 4, 5, 17, 35, 59, 71]),
+     0: (-0.64, [48, 27, 12, 3, 0, 6, 18, 36, 60]),
+    -1: (-0.72, [66, 47, 26, 11, 2, 1, 7, 19, 37]),
+    -2: (-0.64, [65, 46, 25, 10, 9, 8, 20, 38]),
+    -3: (-0.56, [64, 45, 24, 23, 22, 21, 39]),
+    -4: (-0.32, [44, 43, 42, 41, 40]),
+    -5: (-0.08, [63, 62, 61]),
+}
+
+BEAM_SPACING = 0.16                           # deg, centre-to-centre
+BEAM_RADIUS = BEAM_SPACING / 2                # deg
+ROW_SPACING = BEAM_SPACING * np.sqrt(3) / 2   # deg
+
+
+def beam_positions():
+    """Return {beam_id: (cross_el, el)} offsets in degrees."""
+    pos = {}
+    for j, (x0, ids) in _ROWS.items():
+        for k, b in enumerate(ids):
+            pos[b] = (x0 + k * BEAM_SPACING, j * ROW_SPACING)
+    return pos
+
+
+def plot_beam_footprint(ax, highlight=(), title=None, radius=BEAM_RADIUS,
+                        label=True, lim=0.9, highlight_color="gray",
+                        highlight_alpha=0.6, fontsize=8):
+    """Draw the beam footprint on a subplot axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Subplot axes to draw on (e.g. from fig.add_subplot or plt.subplots).
+    highlight : array-like of int
+        Beam numbers to fill with gray.
+    title : str, optional
+        Axes title.
+    radius : float
+        Beam circle radius in degrees.
+    label : bool
+        Annotate each beam with its ID.
+    lim : float
+        Symmetric axis limit in degrees.
+    highlight_color : str
+        Fill colour for highlighted beams.
+    highlight_alpha : float
+        Fill opacity for highlighted beams.
+    fontsize : int
+        Beam label font size.
+
+    Returns
+    -------
+    ax
+    """
+    highlight = set(int(b) for b in np.atleast_1d(highlight))
+
+    for b, (x, y) in beam_positions().items():
+        if b in highlight:
+            circ = Circle((x, y), radius, fc=highlight_color,
+                          alpha=highlight_alpha, ec="none")
+            ax.add_patch(circ)
+        # Outline drawn separately so it stays fully opaque
+        ax.add_patch(Circle((x, y), radius, fc="none", ec="k", lw=1.0))
+        if label:
+            ax.text(x, y, str(b), ha="center", va="center", fontsize=fontsize)
+
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal")
+    ax.grid(True, color="0.8", lw=1.0)
+    ax.set_axisbelow(True)
+    ax.set_xlabel("Cross-elevation offset (deg)")
+    ax.set_ylabel("Elevation offset (deg)")
+    if title:
+        ax.set_title(title)
+    return ax
+
+
+def plot_cands(cluster_file, 
+                fil_path, 
+                window, 
+                time_res,
+                highlight_beams,
+                out_dir=None, 
+                show=False) -> None:
+    """
+    Generate TransientX-style candidate plots (e.g. to push to Mattermost).
+
+    cluster_file : (str) clustered candidate file
+    fil_path     : (str) filterbank file
+    window       : (int) number of samples per plot
+    time_res     : (float) sample time in seconds
+    out_dir      : (str) if given, save PDFs there
+    show         : (bool) show() each candidate
+    """
+    cls_cands = np.atleast_1d(np.loadtxt(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
+    hdr    = _read_header(fil_path)
+    nchans = hdr["nchans"]
+    bw     = abs(hdr["foff"]) * nchans
+    fcen   = hdr["fch1"] + hdr["foff"] * (nchans - 1) / 2.0
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    for i in range(len(cls_cands)):
+        c  = cls_cands[i]
+        dm = c["dm"]
+
+        start = start_for_candidate(hdr, c["sampno"], dm, window,
+                                    f_ref=hdr["fch1"], pad=True)
+        hdr_i, data, max_delay = read_for_dm(fil_path, start, window, 0.0, 2 * dm)
+        trials, dms = dm_transform(data, hdr_i, 0.0, 2 * dm, 1.0)
+        series      = dedisperse_dm(data, hdr_i, dm, nout=trials.shape[0])
+
+        time     = np.arange(window) * time_res
+        tpeak    = time[np.argmax(series)]
+        width_ms = c["boxcar"] * time_res * 1e3
+
+        # ---- text columns for the info row ----
+        col1 = ("CANDIDATE\n---------\n"
+                f"S/N        : {c['sn']:.2f}\n"
+                f"DM         : {dm:.3f}\n"
+                f"Time (s)   : {c['secs']:.4f}\n"
+                f"Sample no. : {int(c['sampno'])}\n"
+                f"Peak time  : {tpeak:.4f} s\n")
+        col2 = ("\n\n"
+                f"Boxcar     : {int(c['boxcar'])} samp\n"
+                f"Width      : {width_ms:.2f} ms\n"
+                f"IDT        : {int(c['idt'])}\n"
+                f"Beam       : {int(c['beamno'])}\n"
+                f"Class      : {int(c['cls'])}\n"
+                f"N cands    : {int(c['ncands'])}\n")
+        col3 = ("HEADER\n------\n"
+                f"Source     : {hdr['source_name']}\n"
+                f"Telescope  : {hdr['telescope_id']}\n"
+                f"Machine    : {hdr['machine_id']}\n"
+                f"Data type  : {hdr['data_type']}\n"
+                f"Tstart MJD : {hdr['tstart']:.6f}\n"
+                f"Cand MJD   : {c['mjd']:.8f}\n")
+        col4 = ("\n\n"
+                f"Tsamp      : {hdr['tsamp']*1e3:.4f} ms\n"
+                f"Nchans     : {nchans}\n"
+                f"fch1/foff  : {hdr['fch1']:.1f}/{hdr['foff']:.1f} MHz\n"
+                f"BW / fcen  : {bw:.0f} / {fcen:.0f} MHz\n"
+                f"Nbits/Nifs : {hdr['nbits']}/{hdr['nifs']}\n"
+                f"File       : {os.path.basename(fil_path)}\n")
+
+
+        fig, ax = subplots(
+                        nrows=4, 
+                        ncols=1,
+                        figsize=(10, 10),
+                        gridspec_kw={"height_ratios": [1.7, 0.15, 1, 1.9], "hspace": 0}
+                        )
+
+        # row 0: info text (left) + beam footprint inset (right)
+        ax[0].axis("off")
+        for x, y, txt in [(0.00, 1.00, col1), 
+                          (0.30, 1.00, col2),
+                          (0.00, 0.50, col3), 
+                          (0.30, 0.50, col4)]:
+    
+            ax[0].text(x, y, 
+                        txt, 
+                        va="top", 
+                        ha="left", 
+                        family="monospace",
+                        fontsize=8, 
+                        transform=ax[0].transAxes)
+        
+
+        ax_beam = ax[0].inset_axes([0.70, 0.17, 0.30, 0.73])
+        plot_beam_footprint(ax_beam, 
+                            highlight=highlight_beams, 
+                            title="FRB beams")
+
+        # row 1: spacer between info and plots
+        ax[1].axis("off")
+
+        # row 2: dedispersed pulse, row 3: DM-time (touching, shared x)
+        ax[3].sharex(ax[2])
+        ax[2].plot(time, series, color="k", lw=1.2)
+        ax[2].axvline(tpeak, color="tab:red", ls="--", lw=0.8, alpha=0.6)
+        ax[2].set_xlim(time[0], time[-1])
+        ax[2].set_ylabel("Amplitude")
+        ax[2].tick_params(labelbottom=False)
+
+        ax[3].imshow(trials.T, aspect="auto", origin="lower", cmap="viridis",
+                     extent=[time[0], time[-1], dms[0], dms[-1]],
+                     interpolation="nearest")
+        ax[3].axhline(dm, color="w", ls=":", lw=0.6, alpha=0.5)
+        ax[3].set_ylabel(r"DM (pc cm$^{-3}$)")
+        ax[3].set_xlabel("Time (s)")
+
+        fig.align_ylabels([ax[2], ax[3]])
+        fig.subplots_adjust(left=0.10, right=0.97, top=0.97, bottom=0.06)
+
+        if out_dir:
+            fig.savefig(os.path.join(
+                out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.pdf"))
+        if show:
+            plt.show()   # not show(): the `show` argument shadows the function
+        close(fig)
+    return None
+
+
+
+def get_score(frac):
+    if frac == 1.0:     # in all beams
+        return -1
+    if frac < 0.5:      # in fewer than 50% of beams
+        return 1
+    return 0            # in between (e.g. ~70% of beams)
+
+
+def beam_coincidence(fname, 
+                    dm_tol, 
+                    sec_tol, 
+                    output,
+                    nbeams=None):
+    cands = np.loadtxt(fname, dtype=CAND_DTYPE_CLS)
+    if nbeams is None:
+        nbeams = len(np.unique(cands["beamno"]))
+
+    out = np.zeros(len(cands), dtype=OUT_DTYPE)
+    for name in CAND_DTYPE_CLS.names:
+        out[name] = cands[name]
+
+    for i, c in enumerate(cands):
+        match = (np.abs(cands["dm"] - c["dm"]) <= dm_tol) & \
+                (np.abs(cands["secs"] - c["secs"]) <= sec_tol)
+        nmatch = len(np.unique(cands["beamno"][match]))   # distinct beams (includes own beam)
+        out["score"][i] = (nmatch / nbeams) * 100
+        #get_score(nmatch / nbeams)
+
+    np.savetxt(output, 
+                out, 
+                fmt=["%.2f", "%d", "%.4f", "%d", "%d", "%.2f", "%d", "%.6f", "%d", "%d", "%d"], 
+                header=",".join(out.dtype.names))
+    return out
+
