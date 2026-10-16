@@ -14,8 +14,8 @@ from matplotlib.pyplot import *
 DM_TOL = 1.0      # pc/cc, max DM difference to call two candidates the same
 SEC_TOL = 0.01    # s, max time difference to call two candidates the same
 
-OUT_DTYPE = np.dtype(CAND_DTYPE_CLS.descr + [("score", "i1")])
-
+OUT_DTYPE       = np.dtype(CAND_DTYPE_CLS.descr + [("score", "i1")])
+TELESCOPE       = "Murriyang cryoPAF"
 
  
 logger = logging.getLogger(__name__)
@@ -283,15 +283,15 @@ def _run_kernel(data, delays, out, skip_nan):
     if not skip_nan:
         dedisperse_kernel(data, delays, out)
         return
-    nsamples = data.shape[1]
-    finite = np.isfinite(data)
-    anyf = finite.any(axis=1)
-    lo = np.where(anyf, finite.argmax(axis=1), 0).astype(np.int64)
-    hi = np.where(anyf, nsamples - finite[:, ::-1].argmax(axis=1), 0).astype(np.int64)
+    nsamples    = data.shape[1]
+    finite      = np.isfinite(data)
+    anyf        = finite.any(axis=1)
+    lo          = np.where(anyf, finite.argmax(axis=1), 0).astype(np.int64)
+    hi          = np.where(anyf, nsamples - finite[:, ::-1].argmax(axis=1), 0).astype(np.int64)
     if not finite.all():
         data = np.where(finite, data, 0.0).astype(np.float32)
     dedisperse_kernel_partial(data, delays, lo, hi, out)
-
+    
 
 def central_dm(dm_min, dm_max):
     return 0.5 * (dm_min + dm_max)
@@ -361,23 +361,31 @@ def dm_transform(data, hdr, dm_min, dm_max, dm_step, skip_nan=False):
 
 def dedisperse_dm(data, hdr, dm, nout=None, skip_nan=False):
     data = np.asarray(data)
+    
     if data.ndim != 2:
         raise ValueError(f"data must be 2-D (nchans, nsamples), got shape {data.shape}")
+    
     nchans, nsamples = data.shape
     delays = delay_table(hdr, [dm])
     max_delay = int(delays.max())
+    
     if nsamples <= max_delay:
         logger.error("Not enough samples: need > %d for DM %.3f, got %d", max_delay, dm, nsamples)
         raise ValueError(f"Need more than {max_delay} samples for DM {dm}, got {nsamples}")
     complete = nsamples - max_delay
+    
     if nout is None:
         nout = complete
     elif nout > complete:
         logger.warning("nout=%d > %d complete samples at DM %.3f", nout, complete, dm)
+    
+
     nout = min(nout, nsamples)
     data = np.ascontiguousarray(data, dtype=np.float32)
     out = np.empty((1, nout), dtype=np.float32)
     _run_kernel(data, delays, out, skip_nan)
+    #print(data.shape, out.shape)
+    
     return out[0]
 
 
@@ -511,6 +519,39 @@ def plot_beam_footprint(ax, highlight=(), title=None, radius=BEAM_RADIUS,
     return ax
 
 
+def get_dispersed(data, hdr, window, nf_out=128, nt_out=1024):
+    """
+    Dispersed dynamic spectrum on the SAME time axis as the dedispersed panels.
+
+    data   : (nchans, window + max_delay) from read_for_dm. data[:, 0] is sample `start`,
+             so the candidate's top-of-band arrival (the bow-tie time) is at window//2.
+    window : samples shown, identical to the other panels.
+
+    Returns
+    -------
+    disp  : (nf, nt) float32, ascending frequency, centre column = bow-tie time
+    freqs : (nf,) MHz, ascending
+    nt    : number of time columns kept (the time axis is time[0] .. time[nt*tb - 1])
+    """
+    f = channel_freqs(hdr)
+    order = np.argsort(f)
+    nchans = len(f)
+
+    disp = np.asarray(data[order, :window], dtype=np.float32)
+    freqs = f[order]
+
+    fb = max(1, nchans // nf_out)
+    tb = max(1, window // nt_out)
+    nfc = nchans // fb * fb
+    ntc = window // tb * tb
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        disp = np.nanmean(
+            disp[:nfc, :ntc].reshape(nfc // fb, fb, ntc // tb, tb), axis=(1, 3))
+    freqs = freqs[:nfc].reshape(-1, fb).mean(axis=1)
+    return disp, freqs, ntc
+
+
 def plot_cands(cluster_file, 
                 fil_path, 
                 window, 
@@ -550,49 +591,52 @@ def plot_cands(cluster_file,
         tpeak    = time[np.argmax(series)]
         width_ms = c["boxcar"] * time_res * 1e3
 
+        disp, d_f, ntc = get_dispersed(data, hdr_i, window)
+
+
         # ---- text columns for the info row ----
-        col1 = ("CANDIDATE\n---------\n"
-                f"S/N        : {c['sn']:.2f}\n"
-                f"DM         : {dm:.3f}\n"
-                f"Time (s)   : {c['secs']:.4f}\n"
-                f"Sample no. : {int(c['sampno'])}\n"
-                f"Peak time  : {tpeak:.4f} s\n")
-        col2 = ("\n\n"
-                f"Boxcar     : {int(c['boxcar'])} samp\n"
-                f"Width      : {width_ms:.2f} ms\n"
-                f"IDT        : {int(c['idt'])}\n"
-                f"Beam       : {int(c['beamno'])}\n"
-                f"Class      : {int(c['cls'])}\n"
-                f"N cands    : {int(c['ncands'])}\n")
-        col3 = ("HEADER\n------\n"
-                f"Source     : {hdr['source_name']}\n"
-                f"Telescope  : {hdr['telescope_id']}\n"
-                f"Machine    : {hdr['machine_id']}\n"
-                f"Data type  : {hdr['data_type']}\n"
-                f"Tstart MJD : {hdr['tstart']:.6f}\n"
-                f"Cand MJD   : {c['mjd']:.8f}\n")
-        col4 = ("\n\n"
-                f"Tsamp      : {hdr['tsamp']*1e3:.4f} ms\n"
-                f"Nchans     : {nchans}\n"
-                f"fch1/foff  : {hdr['fch1']:.1f}/{hdr['foff']:.1f} MHz\n"
-                f"BW / fcen  : {bw:.0f} / {fcen:.0f} MHz\n"
-                f"Nbits/Nifs : {hdr['nbits']}/{hdr['nifs']}\n"
-                f"File       : {os.path.basename(fil_path)}\n")
+        col1 = (#"CANDIDATE\n---------\n"
+                f"fredda S/N    : {c['sn']:.2f}\n"
+                f"DM (pc cm^-3) : {dm:.3f}\n"
+                f"Time (s)      : {c['secs']:.4f}\n"
+                f"Sample no.    : {int(c['sampno'])}\n"
+                f"Peak time     : {tpeak:.4f} s\n"#)
+        #col2 = ("\n\n"
+                f"Boxcar        : {int(c['boxcar'])} samp\n"
+                f"Width         : {width_ms:.2f} ms\n"
+                f"IDT           : {int(c['idt'])}\n"
+                f"Beam          : {int(c['beamno'])}\n"
+                f"Class         : {int(c['cls'])}\n"
+                f"N cands       : {int(c['ncands'])}\n")
+        col3 = (#"HEADER\n------\n"
+                f"Source        : {hdr['source_name']}\n"
+                f"Telescope     : {TELESCOPE}\n"
+                f"Machine       : {hdr['machine_id']}\n"
+                f"Tstart MJD    : {hdr['tstart']:.6f}\n"
+                f"Cand MJD      : {c['mjd']:.8f}\n"#)
+        #col4 = ("\n\n"
+                f"Tsamp         : {hdr['tsamp']*1e3:.2f} ms\n"
+                f"Nchans        : {nchans}\n"
+                f"fch1/foff     : {hdr['fch1']:.1f}/{hdr['foff']:.1f} MHz\n"
+                f"BW / fcen     : {bw:.0f} / {fcen:.0f} MHz\n"
+                f"Nbits/Nifs    : {hdr['nbits']}/{hdr['nifs']}\n"
+                f"File          : {os.path.basename(fil_path)}\n")
 
 
         fig, ax = subplots(
                         nrows=4, 
                         ncols=1,
-                        figsize=(10, 10),
-                        gridspec_kw={"height_ratios": [1.7, 0.15, 1, 1.9], "hspace": 0}
+                        figsize=(10, 14),
+                        gridspec_kw={"height_ratios": [1.0, 0.7, 1., 1.0], "hspace": 0}
                         )
 
         # row 0: info text (left) + beam footprint inset (right)
         ax[0].axis("off")
         for x, y, txt in [(0.00, 1.00, col1), 
-                          (0.30, 1.00, col2),
-                          (0.00, 0.50, col3), 
-                          (0.30, 0.50, col4)]:
+                          (0.30, 1.00, col3),
+                          #(0.00, 0.50, col3), 
+                          #(0.30, 0.50, col3)
+                         ]:
     
             ax[0].text(x, y, 
                         txt, 
@@ -603,30 +647,46 @@ def plot_cands(cluster_file,
                         transform=ax[0].transAxes)
         
 
-        ax_beam = ax[0].inset_axes([0.70, 0.17, 0.30, 0.73])
+        ax_beam = ax[0].inset_axes([0.65, 0.42, 0.35, 0.60])
         plot_beam_footprint(ax_beam, 
                             highlight=highlight_beams, 
                             title="FRB beams")
+   
 
-        # row 1: spacer between info and plots
-        ax[1].axis("off")
 
-        # row 2: dedispersed pulse, row 3: DM-time (touching, shared x)
-        ax[3].sharex(ax[2])
-        ax[2].plot(time, series, color="k", lw=1.2)
-        ax[2].axvline(tpeak, color="tab:red", ls="--", lw=0.8, alpha=0.6)
-        ax[2].set_xlim(time[0], time[-1])
-        ax[2].set_ylabel("Amplitude")
+
+        ax[3].imshow(disp, aspect="auto", origin="lower", cmap="viridis",
+                     extent=[time[0], time[ntc - 1], d_f[0], d_f[-1]],
+                     interpolation="nearest",
+                     vmin=np.nanpercentile(disp, 1),
+                     vmax=np.nanpercentile(disp, 99.5))
+        ax[3].axvline(tpeak, color="tab:red", ls="--", lw=0.8, alpha=0.6)
+        ax[3].set_xlim(time[0], time[-1])
+        ax[3].set_xlabel("Time (s)")
+        ax[3].set_ylabel("Frequency (MHz)")
+        ax[2].sharex(ax[1])      # was ax[2].sharex(ax[2])
+        ax[3].sharex(ax[1])
         ax[2].tick_params(labelbottom=False)
+ 
+        # row 2: dedispersed pulse, row 3: DM-time (touching, shared x)
+        #ax[2].sharex(ax[2])
+        ax[1].plot(time, series, color="k", lw=1.2)
+        ax[1].axvline(tpeak, color="tab:red", ls="--", lw=0.8, alpha=0.6)
+        ax[1].set_xlim(time[0], time[-1])
+        ax[1].set_ylabel("Amplitude")
+        ax[1].tick_params(labelbottom=False)
 
-        ax[3].imshow(trials.T, aspect="auto", origin="lower", cmap="viridis",
+        ax[2].imshow(trials.T, aspect="auto", origin="lower", cmap="viridis",
                      extent=[time[0], time[-1], dms[0], dms[-1]],
                      interpolation="nearest")
-        ax[3].axhline(dm, color="w", ls=":", lw=0.6, alpha=0.5)
-        ax[3].set_ylabel(r"DM (pc cm$^{-3}$)")
-        ax[3].set_xlabel("Time (s)")
+        ax[2].axhline(dm, color="w", ls=":", lw=0.6, alpha=0.5)
+        ax[2].set_ylabel(r"DM (pc cm$^{-3}$)")
+        ax[2].set_xlabel("Time (s)")
 
-        fig.align_ylabels([ax[2], ax[3]])
+
+
+
+        fig.align_ylabels([ax[1], ax[2]])
         fig.subplots_adjust(left=0.10, right=0.97, top=0.97, bottom=0.06)
 
         if out_dir:
