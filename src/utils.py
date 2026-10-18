@@ -707,15 +707,6 @@ def plot_cands(cluster_file,
     return None
 
 
-
-def get_score(frac):
-    if frac == 1.0:     # in all beams
-        return -1
-    if frac < 0.5:      # in fewer than 50% of beams
-        return 1
-    return 0            # in between (e.g. ~70% of beams)
-
-
 def get_score(frac):
     if frac == 1.0:     # in all beams
         return -1
