@@ -23,12 +23,20 @@ def main():
                     "--output", 
                     default="coincidence.cand", 
                     help="output file")
-    args        =    p.parse_args()
-    
-    out_cands   =       beam_coincidence(args.file, 
-                                        args.dm_tol, 
-                                        args.time_tol,
-                                        args.output, 
+    args        =    p.parse_args()     
+
+
+    #def beam_coincidence(fname,
+    #                 dm_tol,
+    #                 sec_tol,
+    #                 nbeams=None,
+    #                 snr_field="sn"):
+   
+ 
+    out_cands   =       beam_coincidence(fname=args.file, 
+                                        dm_tol=args.dm_tol, 
+                                        sec_tol=args.time_tol,
+                                        
                                         )
 
 
