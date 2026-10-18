@@ -727,9 +727,12 @@ def beam_coincidence(fname,
         out["score"][i] = (nmatch / nbeams) * 100
         #get_score(nmatch / nbeams)
 
-    np.savetxt(output, 
+    np.savetxt(f"{fname}.con", 
                 out, 
                 fmt=["%.2f", "%d", "%.4f", "%d", "%d", "%.2f", "%d", "%.6f", "%d", "%d", "%d"], 
                 header=",".join(out.dtype.names))
     return out
+
+
+
 
