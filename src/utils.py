@@ -556,7 +556,7 @@ def plot_cands(cluster_file,
                 fil_path, 
                 window, 
                 time_res,
-                highlight_beams,
+                #highlight_beams,
                 out_dir=None, 
                 show=False) -> None:
     """
@@ -569,11 +569,19 @@ def plot_cands(cluster_file,
     out_dir      : (str) if given, save PDFs there
     show         : (bool) show() each candidate
     """
-    cls_cands = np.atleast_1d(np.loadtxt(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
-    hdr    = _read_header(fil_path)
-    nchans = hdr["nchans"]
-    bw     = abs(hdr["foff"]) * nchans
-    fcen   = hdr["fch1"] + hdr["foff"] * (nchans - 1) / 2.0
+    #cls_cands = np.atleast_1d(np.loadtxt(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
+    cls_cands   =   np.atleast_1d(read_beam_cands(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
+    
+    #Reading the beams from file
+    highlight_beams     =       cls_cands['beams'] 
+
+    #Reading the beam file:
+    
+
+    hdr         = _read_header(fil_path)
+    nchans      = hdr["nchans"]
+    bw          = abs(hdr["foff"]) * nchans
+    fcen        = hdr["fch1"] + hdr["foff"] * (nchans - 1) / 2.0
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
@@ -707,6 +715,67 @@ def get_score(frac):
     return 0            # in between (e.g. ~70% of beams)
 
 
+
+def beam_coincidence(fname,
+                     dm_tol,
+                     sec_tol,
+                     nbeams=None,
+                     snr_field="sn"):
+    """
+    Cluster candidates in (DM, time) and keep only the highest-S/N candidate
+    of each cluster. Each kept candidate gets a coincidence score: the
+    percentage of beams that have at least one candidate within
+    (dm_tol, sec_tol) of it.
+ 
+    """
+    cands = np.loadtxt(fname, dtype=CAND_DTYPE_CLS, ndmin=1)   # ndmin=1: single-row files
+    n = len(cands)
+    if nbeams is None:
+        nbeams = len(np.unique(cands["beamno"]))
+ 
+    out      = np.zeros(n, dtype=OUT_DTYPE)
+    out_beam = np.zeros(n, dtype=CAND_DTYPE_CLS_BEAM)
+    for name in CAND_DTYPE_CLS.names:
+        out[name]      = cands[name]
+        out_beam[name] = cands[name]
+ 
+    # Brightest first; ties broken deterministically (independent of input order)
+    order = np.lexsort((cands["beamno"], cands["dm"], cands["secs"], -cands[snr_field]))
+ 
+    claimed = np.zeros(n, dtype=bool)
+    keep = []
+    for i in order:
+        if claimed[i]:
+            continue
+ 
+        c = cands[i]
+        near = (np.abs(cands["dm"]   - c["dm"])   <= dm_tol) & \
+               (np.abs(cands["secs"] - c["secs"]) <= sec_tol)
+ 
+        beams = np.unique(cands["beamno"][near])          
+        out["score"][i]      = (len(beams) / nbeams) * 100
+        out_beam["beams"][i] = beams
+ 
+        claimed |= near                                   
+        keep.append(i)
+ 
+    keep     = np.sort(np.asarray(keep, dtype=np.intp))   
+    out      = out[keep]
+    out_beam = out_beam[keep]
+ 
+    np.savetxt(f"{fname}.con",
+               out,
+               fmt=["%.2f", "%d", "%.4f", "%d", "%d", "%.2f", "%d", "%.6f", "%d", "%d", "%.2f"],
+               header=",".join(out.dtype.names))
+ 
+    write_beam_cands(f"{fname}.beams_con",
+                     out_beam,
+                     fmt='.4g',
+                     field_fmt={'mjd': '.8f', 'sampno': '.0f', 'beamno': '.0f'},
+                     array_fmt='1.0f')
+    return out
+ 
+"""
 def beam_coincidence(fname, 
                     dm_tol, 
                     sec_tol, 
@@ -716,20 +785,63 @@ def beam_coincidence(fname,
     if nbeams is None:
         nbeams = len(np.unique(cands["beamno"]))
 
-    out = np.zeros(len(cands), dtype=OUT_DTYPE)
+    out         = np.zeros(len(cands), dtype=OUT_DTYPE)
+    out_beam    = np.zeros(len(cands), dtype=CAND_DTYPE_CLS_BEAM)
+    
     for name in CAND_DTYPE_CLS.names:
-        out[name] = cands[name]
+        out[name]       = cands[name]
+        out_beam[name]  = cands[name]
+
 
     for i, c in enumerate(cands):
         match = (np.abs(cands["dm"] - c["dm"]) <= dm_tol) & \
                 (np.abs(cands["secs"] - c["secs"]) <= sec_tol)
         nmatch = len(np.unique(cands["beamno"][match]))   # distinct beams (includes own beam)
-        out["score"][i] = (nmatch / nbeams) * 100
-        #get_score(nmatch / nbeams)
+        out["score"][i]                 = (nmatch / nbeams) * 100
+        out_beam["beams"][i]   = np.unique(cands["beamno"][match])     
 
-    np.savetxt(output, 
+    np.savetxt(f"{fname}.con", 
                 out, 
                 fmt=["%.2f", "%d", "%.4f", "%d", "%d", "%.2f", "%d", "%.6f", "%d", "%d", "%d"], 
                 header=",".join(out.dtype.names))
-    return out
 
+    write_beam_cands(f"{fname}.beams_con", 
+                    out_beam, 
+                    fmt='.4g',
+                    field_fmt={'mjd': '.8f', 'sampno': '.0f', 'beamno': '.0f'},
+                    array_fmt='1.0f'
+                    )
+    return out
+"""
+
+def write_beam_cands(filename, 
+                    data, 
+                    dtype=CAND_DTYPE_CLS_BEAM,
+                    fmt='.6g', 
+                    field_fmt=None, 
+                    array_fmt=None):
+
+    names       = dtype.names
+    field_fmt   = field_fmt or {}        # per-field overrides, e.g. {'mjd': '.8f'}
+    array_fmt   = array_fmt or fmt       # format for the variable array values
+    header      = '# ' + ' '.join(names[:-1]) + f' {names[-1]}...'
+    with open(filename, 'w') as f:
+        f.write(header + '\n')
+        for r in data:
+            scalars     = [format(r[n], field_fmt.get(n, fmt)) for n in names[:-1]]
+            arr         = np.asarray(r[names[-1]], dtype=float)
+            f.write(' '.join(scalars + [format(v, array_fmt) for v in arr]) + '\n')
+
+def read_beam_cands(filename, dtype=CAND_DTYPE_CLS_BEAM):
+    n_scalar = len(dtype.names) - 1
+    with open(filename) as f:
+        lines = [l for l in f.read().splitlines()
+                 if l.strip() and not l.lstrip().startswith('#')]
+
+    out = np.empty(len(lines), dtype=dtype)
+    for i, line in enumerate(lines):
+        t = line.split()
+        scalars = [float(x) for x in t[:n_scalar]]
+        arr = np.array(t[n_scalar:], dtype=float)    # rest of the line
+        out[i] = (*scalars, arr)
+    return out
