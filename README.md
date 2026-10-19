@@ -47,4 +47,4 @@ pip install -e .
 ```   
 
 ![A graphical overview of the candidate pipeline](FIGURES/cryoPAF_pipeline.png)
-
+*Figure 1: A graphical overview of the candidate pipeline*
