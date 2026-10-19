@@ -8,7 +8,7 @@
 ## Contents
  
 1. [Overview](#1-overview)
-
+2. [Installation and dependencies](#2-Installation and dependencies)
 
 ## 1. Overview
  
@@ -33,4 +33,19 @@ raw FREDDA candidates ──► cluster_mb()  ──► best candidate per clust
                                   ▼                           ▼
                             *_matches.txt               *_unique.txt
 ```
-   
+
+
+
+## 2. Installation and dependencies
+
+```bash
+python -m venv cryo_venv --prompt cryopipe
+```
+
+
+```bash
+pip install -e .
+```   
+
+
+
