@@ -163,8 +163,8 @@ if __name__ == "__main__":
                                                                                                   
     out = result if args.all else result[result["is_match"]]                                      
     unq = result if args.all else result[np.where(result["is_match"]==False)[0]]                  
-    save_csv(args.out, out)                                                                       
-    save_csv(args.out_unq, unq)                                                                   
+    save_csv(f"{args.file}_matches.txt", out)                                                                       
+    save_csv(f"{args.file}_unique.txt", unq)                                                                   
     print(f"[INFO] Wrote {len(out)} rows to {args.out}")                                          
                                                                                                   
 
