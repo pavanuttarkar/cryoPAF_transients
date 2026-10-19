@@ -21,7 +21,7 @@ The code base takes the raw candidate list written by FREDDA (FDMT-based single-
 3. **Cross-match** against a known-pulsar catalogue by sky separation and DM. Candidates that match are labelled with the pulsar name.
 
 
-A flowchart for the pipeline is shown in Figure @fig:cryoPAFpipe
+A flowchart for the pipeline is shown in [Figure 1](#A-graphical-overview-of-the-candidate-pipeline)
  
 ```
 raw FREDDA candidates ──► cluster_mb()  ──► best candidate per cluster
@@ -46,5 +46,5 @@ python -m venv cryo_venv --prompt cryopipe
 pip install -e .
 ```   
 
-![A graphical overview of the candidate pipeline](FIGURES/cryoPAF_pipeline.png){#fig:cryoPAFpipe}
+![A graphical overview of the candidate pipeline](FIGURES/cryoPAF_pipeline.png){#fig1:cryoPAFpipe}
 
