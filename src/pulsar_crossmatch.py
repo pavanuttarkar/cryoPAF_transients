@@ -40,8 +40,8 @@ import sys
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
-from header import CAND_DTYPE, CAND_RADEC_DTYPE, BEAM_DTYPE
-from header import CATALOG_DTYPE, MATCH_EXTRA_DTYPE, CAND_DTYPE_CLS
+from src.header import CAND_DTYPE, CAND_RADEC_DTYPE, BEAM_DTYPE
+from src.header import CATALOG_DTYPE, MATCH_EXTRA_DTYPE, CAND_DTYPE_CLS
 
 
 def load_candidates(path: str) -> np.ndarray:

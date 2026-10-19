@@ -1,6 +1,6 @@
 import argparse
-from run_cluster_numba import * 
-from pulsar_crossmatch import read_beam_positions, \
+from src.run_cluster_numba import * 
+from src.pulsar_crossmatch import read_beam_positions, \
                               attach_beam_coords, \
                               crossmatch, \
                               load_local_catalog, \

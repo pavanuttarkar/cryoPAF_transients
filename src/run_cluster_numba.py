@@ -2,7 +2,7 @@ import argparse
 import math
 import numpy as np
 from numba import njit
-from header import *
+from src.header import *
 
 UNVISITED = -2
 NOISE     = -1
