@@ -8,7 +8,7 @@
 ## Contents
  
 1. [Overview](#1-overview)
-2. [Installation and dependencies](#2-Installation and dependencies)
+2. [Installation and dependencies](#2-Installation-and-dependencies)
 
 ## 1. Overview
  
