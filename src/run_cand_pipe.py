@@ -6,8 +6,10 @@ from pulsar_crossmatch import read_beam_positions, \
                               load_local_catalog, \
                               save_csv
 
-if __name__ == "__main__":
 
+
+
+def main():
     p = argparse.ArgumentParser(description="Cluster FREDDA/FDMT candidates.")
     p.add_argument("-f",                                                            
                     "--file",                                                       
@@ -168,4 +170,13 @@ if __name__ == "__main__":
     print(f"[INFO] Wrote {len(out)} rows to {args.out}")                                          
                                                                                                   
 
-     
+
+
+
+
+
+ 
+if __name__ == "__main__":
+    main()
+
+
