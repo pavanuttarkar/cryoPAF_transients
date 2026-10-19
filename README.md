@@ -46,5 +46,5 @@ python -m venv cryo_venv --prompt cryopipe
 pip install -e .
 ```   
 
-![A graphical overview of the candidate pipeline](FIGURES/cryoPAF_pipeline.png){#fig1:cryoPAFpipe}
+![A graphical overview of the candidate pipeline](FIGURES/cryoPAF_pipeline.png)
 
