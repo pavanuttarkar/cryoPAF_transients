@@ -43,6 +43,18 @@ CAND_DTYPE_CLS = np.dtype([
 #    ("cls",    "f8"),
 #])
 
+## S/N, sampno, secs from file start, boxcar, idt, dm, beamno, mjd
+#CAND_DTYPE = np.dtype([
+#    ("sn",     "f8"),
+#    ("sampno", "i8"),
+#    ("secs",   "f8"),
+#    ("boxcar", "i8"),
+#    ("idt",    "i8"),
+#    ("dm",     "f8"),
+#    ("beamno", "i8"),
+#])
+
+
 # S/N, sampno, secs from file start, boxcar, idt, dm, beamno, mjd
 CAND_DTYPE = np.dtype([
     ("sn",     "f8"),
@@ -54,6 +66,8 @@ CAND_DTYPE = np.dtype([
     ("beamno", "i8"),
     ("mjd",    "f8"),
 ])
+
+
 
 # Candidate file that already carries ra/dec instead of beamno
 CAND_RADEC_DTYPE = np.dtype([
@@ -94,3 +108,28 @@ MATCH_EXTRA_DTYPE = [
     ("is_match",   "bool"),
 ]
 
+
+NEW_CAND_DTYPE = np.dtype([
+    ("sn",         np.float64),
+    ("sampno",     np.int64),
+    ("secs",       np.float64),
+    ("boxcar",     np.int32),
+    ("idt",        np.int32),
+    ("dm",         np.float64),
+    ("beamno",     np.int32),
+    ("mjd",        np.float64),   
+    ("ra",         "U12"),        
+    ("dec",        "U12"),        
+    ("match_name", "U32"),        
+    ("match_ra",   "U12"),
+    ("match_dec",  "U12"),
+    ("match_dm",   np.float64),
+    ("sep_deg",    np.float64),
+    ("ddm",        np.float64),
+    ("ddm_frac",   np.float64),
+    ("is_match",   np.bool_),
+])
+
+
+CAND_DTYPE_CLS_BEAM = np.dtype(NEW_CAND_DTYPE.descr + [("beams", "O")])
+ 

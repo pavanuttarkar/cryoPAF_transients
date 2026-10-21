@@ -35,6 +35,15 @@ DBL = {"tstart", "tsamp", "fch1", "foff", "refdm", "az_start", "za_start",
 STR = {"source_name", "rawdatafile"}
 
 
+ 
+
+
+OUT_DTYPE = np.dtype(NEW_CAND_DTYPE.descr + [("score", "f8")])
+ 
+# Beam output = all input columns + array of coincident beam numbers
+CAND_DTYPE_CLS_BEAM = np.dtype(NEW_CAND_DTYPE.descr + [("beams", "O")])
+ 
+
 def dump_npy(file, save_file) -> None:
     data    =   np.loadtxt(f"{file}", 
 				dtype=CATALOG_DTYPE, 
@@ -571,7 +580,7 @@ def plot_cands(cluster_file,
     show         : (bool) show() each candidate
     """
     #cls_cands = np.atleast_1d(np.loadtxt(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
-    cls_cands   =   np.atleast_1d(read_beam_cands(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
+    cls_cands   =   np.atleast_1d(read_beam_cands(f"{cluster_file}", dtype=CAND_DTYPE_CLS_BEAM))
     
     #Reading the beams from file
     highlight_beams     =       cls_cands['beams'] 
@@ -610,32 +619,30 @@ def plot_cands(cluster_file,
                 f"Time (s)      : {c['secs']:.4f}\n"
                 f"Sample no.    : {int(c['sampno'])}\n"
                 f"Peak time     : {tpeak:.4f} s\n"#)
-        #col2 = ("\n\n"
                 f"Boxcar        : {int(c['boxcar'])} samp\n"
                 f"Width         : {width_ms:.2f} ms\n"
                 f"IDT           : {int(c['idt'])}\n"
                 f"Beam          : {int(c['beamno'])}\n"
                 f"Class         : {int(c['cls'])}\n"
-                f"N cands       : {int(c['ncands'])}\n")
+                f"N cands       : {int(c['ncands'])}\n"
+                f"Nbits/Nifs    : {hdr['nbits']}/{hdr['nifs']}\n"
+                f"BW / fcen     : {bw:.0f} / {fcen:.0f} MHz\n")
         col3 = (#"HEADER\n------\n"
                 f"Source        : {hdr['source_name']}\n"
                 f"Telescope     : {TELESCOPE}\n"
                 f"Machine       : {hdr['machine_id']}\n"
                 f"Tstart MJD    : {hdr['tstart']:.6f}\n"
                 f"Cand MJD      : {c['mjd']:.8f}\n"#)
-        #col4 = ("\n\n"
                 f"Tsamp         : {hdr['tsamp']*1e3:.2f} ms\n"
                 f"Nchans        : {nchans}\n"
                 f"fch1/foff     : {hdr['fch1']:.1f}/{hdr['foff']:.1f} MHz\n"
-                f"BW / fcen     : {bw:.0f} / {fcen:.0f} MHz\n"
-                f"Nbits/Nifs    : {hdr['nbits']}/{hdr['nifs']}\n"
                 f"File          : {os.path.basename(fil_path)}\n")
 
 
         fig, ax = subplots(
                         nrows=4, 
                         ncols=1,
-                        figsize=(10, 14),
+                        figsize=(11, 14),
                         gridspec_kw={"height_ratios": [1.0, 0.7, 1., 1.0], "hspace": 0}
                         )
 
@@ -652,11 +659,11 @@ def plot_cands(cluster_file,
                         va="top", 
                         ha="left", 
                         family="monospace",
-                        fontsize=8, 
+                        fontsize=11, 
                         transform=ax[0].transAxes)
         
 
-        ax_beam = ax[0].inset_axes([0.65, 0.42, 0.35, 0.60])
+        ax_beam = ax[0].inset_axes([0.67, 0.36, 0.42, 0.68])
         plot_beam_footprint(ax_beam, 
                             highlight=highlight_beams, 
                             title="FRB beams")
@@ -715,6 +722,49 @@ def get_score(frac):
     return 0            # in between (e.g. ~70% of beams)
 
 
+ 
+def write_beam_cands(fname, arr, fmt=".4g", field_fmt=None, array_fmt="1.0f"):
+    """
+    Write candidates with a variable-length 'beams' column.
+    fmt        : default format spec for float fields
+    field_fmt  : {field: format_spec} overrides
+    array_fmt  : format spec for each element of an array field (e.g. beams)
+    """
+    field_fmt = field_fmt or {}
+    with open(fname, "w", encoding="utf-8") as f:
+        f.write("#" + ",".join(arr.dtype.names) + "\n")
+        for row in arr:
+            cols = []
+            for name in arr.dtype.names:
+                v = row[name]
+                spec = field_fmt.get(name)
+                if isinstance(v, np.ndarray):
+                    cols.append("[" + " ".join(format(x, array_fmt) for x in v) + "]")
+                elif isinstance(v, (bool, np.bool_, str, np.str_)):
+                    cols.append(str(v))
+                elif isinstance(v, (float, np.floating)):
+                    cols.append(format(v, spec or fmt))
+                elif isinstance(v, (int, np.integer)):
+                    cols.append(format(v, spec) if spec else str(v))
+                else:
+                    cols.append(str(v))
+            f.write(",".join(cols) + "\n")
+ 
+ 
+def _make_out_fmt(dtype, overrides=None):
+    """One savetxt format per field of `dtype`, chosen by dtype kind.
+    Per-field `overrides` take precedence, so this keeps working if the
+    dtype in header.py gains/loses columns."""
+    overrides = overrides or {}
+    fmts = []
+    for name in dtype.names:
+        kind = dtype[name].kind
+        default = "%d" if kind in "iu" else "%.4f" if kind == "f" else "%s"
+        fmts.append(overrides.get(name, default))
+    return fmts
+ 
+ 
+
 
 def beam_coincidence(fname,
                      dm_tol,
@@ -727,15 +777,141 @@ def beam_coincidence(fname,
     percentage of beams that have at least one candidate within
     (dm_tol, sec_tol) of it.
  
+    Input : comma-separated text file with NEW_CAND_DTYPE columns
+            (header line starting with '#').
+    Output: <fname>.con         - kept candidates + score
+            <fname>.beams_con   - kept candidates + list of coincident beams
     """
-    cands = np.loadtxt(fname, dtype=CAND_DTYPE_CLS, ndmin=1)   # ndmin=1: single-row files
+    
+    OUT_FMT = _make_out_fmt(OUT_DTYPE, {
+        "sn": "%.2f", "secs": "%.4f", "dm": "%.2f", "mjd": "%.6f",
+        "match_dm": "%.2f", "sep_deg": "%.6f", "ddm": "%.3f",
+        "ddm_frac": "%.6f", "score": "%.2f",
+    })
+
+
+
+    cands = np.loadtxt(fname,
+                       dtype=NEW_CAND_DTYPE,
+                       delimiter=",",
+                       encoding="utf-8",
+                       ndmin=1,                                     # single-row files
+                       converters={17: lambda s: s.strip().lower() == "true"})  # is_match
     n = len(cands)
     if nbeams is None:
         nbeams = len(np.unique(cands["beamno"]))
  
     out      = np.zeros(n, dtype=OUT_DTYPE)
     out_beam = np.zeros(n, dtype=CAND_DTYPE_CLS_BEAM)
-    for name in CAND_DTYPE_CLS.names:
+    for name in NEW_CAND_DTYPE.names:
+        out[name]      = cands[name]
+        out_beam[name] = cands[name]
+ 
+    # Brightest first; ties broken deterministically (independent of input order)
+    order = np.lexsort((cands["beamno"], cands["dm"], cands["secs"], -cands[snr_field]))
+ 
+    claimed = np.zeros(n, dtype=bool)
+    keep = []
+    for i in order:
+        if claimed[i]:
+            continue
+ 
+        c = cands[i]
+        near = (np.abs(cands["dm"]   - c["dm"])   <= dm_tol) & \
+               (np.abs(cands["secs"] - c["secs"]) <= sec_tol)
+ 
+        beams = np.unique(cands["beamno"][near])
+        out["score"][i]      = (len(beams) / nbeams) * 100
+        out_beam["beams"][i] = beams
+ 
+        claimed |= near
+        keep.append(i)
+ 
+    keep     = np.sort(np.asarray(keep, dtype=np.intp))
+    out      = out[keep]
+    out_beam = out_beam[keep]
+ 
+    # comma delimiter so the header and rows are consistent and re-loadable
+    np.savetxt(f"{fname}.con",
+               out,
+               fmt=OUT_FMT,
+               delimiter=",",
+               header=",".join(out.dtype.names),
+               comments="#")
+ 
+    write_beam_cands(f"{fname}.beams_con",
+                     out_beam,
+                     fmt=".4g",
+                     field_fmt={"mjd": ".8f", "sampno": ".0f", "beamno": ".0f"},
+                     array_fmt="1.0f")
+    return out
+ 
+
+def _parse_scalar(text, field_dtype):
+    """Convert one text column to the python value matching `field_dtype`."""
+    text = text.strip()
+    kind = field_dtype.kind
+    if kind == "b":
+        return text.lower() == "true"
+    if kind in "iu":
+        return int(float(text))             # accepts '21722' and '21722.0'
+    if kind == "f":
+        return float(text)
+    return text
+ 
+ 
+def read_beam_cands(filename, dtype=CAND_DTYPE_CLS_BEAM):
+    """
+    Read a file written by write_beam_cands: a '#' header line, then one
+    candidate per line with comma-separated scalar columns followed by a final
+    'beams' column such as '[0 1 2]'.
+ 
+    Returns a structured array of `dtype`; each row's 'beams' is a float array.
+    """
+    n_scalar = len(dtype.names) - 1
+    with open(filename, encoding="utf-8") as f:
+        lines = [l for l in f.read().splitlines()
+                 if l.strip() and not l.lstrip().startswith('#')]
+ 
+    out = np.empty(len(lines), dtype=dtype)
+    for i, line in enumerate(lines):
+        t = line.split(',', n_scalar)                # last piece = beams column
+        scalars = [_parse_scalar(x, dtype[name])
+                   for x, name in zip(t[:n_scalar], dtype.names)]
+        arr = np.array(t[n_scalar].strip().strip('[]').split(), dtype=float)
+        out[i] = (*scalars, arr)
+    return out
+ 
+"""
+def beam_coincidence(fname,
+                     dm_tol,
+                     sec_tol,
+                     nbeams=None,
+                     snr_field="sn"):
+    '''
+    Cluster candidates in (DM, time) and keep only the highest-S/N candidate
+    of each cluster. Each kept candidate gets a coincidence score: the
+    percentage of beams that have at least one candidate within
+    (dm_tol, sec_tol) of it.
+ 
+    '''
+    #cands = np.loadtxt(fname, dtype=CAND_DTYPE_CLS, ndmin=1)   # ndmin=1: single-row files
+    cands = np.loadtxt(fname, 
+                        dtype=NEW_CAND_DTYPE, 
+                        delimiter=',', 
+                        encoding="utf-8", 
+                        ndmin=1, 
+                        converters={17: lambda s: s.strip().lower() == "true"},)   # ndmin=1: single-row files
+    n = len(cands)
+    if nbeams is None:
+        nbeams = len(np.unique(cands["beamno"]))
+ 
+    out      = np.zeros(n, dtype=OUT_DTYPE)
+    out_beam = np.zeros(n, dtype=CAND_DTYPE_CLS_BEAM)
+    #for name in CAND_DTYPE_CLS.names:
+    #    out[name]      = cands[name]
+    #    out_beam[name] = cands[name]
+    for name in NEW_CAND_DTYPE.names:
         out[name]      = cands[name]
         out_beam[name] = cands[name]
  
@@ -775,6 +951,7 @@ def beam_coincidence(fname,
                      array_fmt='1.0f')
     return out
  
+"""
 """
 def beam_coincidence(fname, 
                     dm_tol, 
@@ -817,7 +994,6 @@ def beam_coincidence(fname,
                     array_fmt='1.0f'
                     )
     return out
-"""
 
 def write_beam_cands(filename, 
                     data, 
@@ -850,4 +1026,5 @@ def read_beam_cands(filename, dtype=CAND_DTYPE_CLS_BEAM):
         arr = np.array(t[n_scalar:], dtype=float)    # rest of the line
         out[i] = (*scalars, arr)
     return out
->>>>>>> be44e8d95555ea427bc6ae685a77e005b060ba83
+
+"""

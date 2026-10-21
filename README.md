@@ -48,3 +48,21 @@ pip install -e .
 
 ![A graphical overview of the candidate pipeline](FIGURES/cryoPAF_pipeline.png)
 *Figure 1: A graphical overview of the candidate pipeline*
+
+
+## 3. Quick start
+ 
+```bash
+# 1. One-off: fetch the ATNF catalogue and convert to a fast .npy file
+python query_psrcat.py --out known_pulsars.csv --npy-out known_pulsars.npy
+ 
+# 2. Run the pipeline
+run_cand_pipe \
+    -f candidates.fredda \
+    --dt 1.28 \
+    --beams beam_positions.txt \
+    --catalog known_pulsars.npy \
+    -o run1
+```
+
+
