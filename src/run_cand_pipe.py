@@ -56,6 +56,11 @@ def main():
                     default=0.1,
                     dest="dm_tol",
                     help="Fractional DM tolerance, e.g. 0.1 = 10%% (default: 0.1)")
+    p.add_argument("--dm-tol-beam-com", 
+                    type=float, 
+                    default=0.1,
+                    dest="dm_tol_beam_con",
+                    help="DM tolerence for beam coincidencing in DMunits (default: 1 pc cm^-3)")
     p.add_argument("--dm-abs-tol", 
                     type=float, 
                     default=None, 
@@ -170,10 +175,11 @@ def main():
     print(f"[INFO] Wrote {len(out)} rows to {args.out}")                                          
                                                                                                   
 
+    #The triggeres are generated using f"{args.file}_unique.txt", the next step would be to 
+    #do beam co-incidencing. However, to keep latency in check, we are not doing this at this
+    #stage. Future inprovemnets and beanch makring will be made to enable this here. 
 
-
-
-
+    #-- Pavan, OCT 26 2026
 
  
 if __name__ == "__main__":
