@@ -9,6 +9,7 @@
  
 1. [Overview](#1-overview)
 2. [Installation and dependencies](#2-Installation-and-dependencies)
+3. [Quick Start](#3-Quick-start)
 
 ## 1. Overview
  
@@ -57,12 +58,25 @@ pip install -e .
 python query_psrcat.py --out known_pulsars.csv --npy-out known_pulsars.npy
  
 # 2. Run the pipeline
-run_cand_pipe \
-    -f candidates.fredda \
-    --dt 1.28 \
-    --beams beam_positions.txt \
-    --catalog known_pulsars.npy \
-    -o run1
+run_cand_pipe  \
+    --beams EXAMPLE/beam_positions_fredda.txt \
+    --catalog src/known_pulsars.npy \
+    --radius 2 \
+    --dm-tol 0.2 \
+    --npy 1 \
+    -f cryo_fredda_cands.txt \
+    --dt 0.911 \
+    --min-samples 2 \
+    -o cryo_pulsar
+
+# 3. Run the beam coincidencing
+beam_con.py \   
+    -f cryo_fredda_cands.txt_unique.txt
+
+# 4. Plotting candidates
+
+
+
 ```
 
 
