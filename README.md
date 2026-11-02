@@ -73,10 +73,22 @@ run_cand_pipe  \
 beam_con.py \   
     -f cryo_fredda_cands.txt_unique.txt
 
-# 4. Plotting candidates
-
-
+# 4. Plotting candidates and posting to slack
+plot_cands \
+    -f cryo_fredda_cands.txt_unique.txt.beams_con \
+    -fil CRYO_PULSAR/paf_261016_024337_B00.fil  \
+    --dt 0.911  \
+    -s 1  # Slack push
 
 ```
+
+Posting the plots to slack will require the channel ID and slack token (only accessible internally). An example plot from the candidate pipeline is shown here: 
+
+
+![Example candidate output](FIGURES/.png)
+*Figure 1: A graphical overview of the candidate pipeline*
+
+ 
+
 
 

@@ -53,6 +53,8 @@ setup(
     entry_points={
         "console_scripts": [
             "run_cand_pipe=src.run_cand_pipe:main",
+            "beam_con=src.beam_con:main",
+            "plot_cands=src.plot_cands:main",
         ],
     },
     include_package_data=True,

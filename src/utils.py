@@ -1,21 +1,26 @@
 import os
 import sys
 import time
+import glob
+import yaml
 import struct
 import logging
 import warnings
 import numpy as np
 from pathlib import Path
+from dotenv import load_dotenv
 from numba import njit, prange
 from matplotlib.pyplot import *
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 #LOCAL IMPORTS
-from header import *
+from src.header import *
 
 
-CHANNEL =       "C09JXV0KUUB"
+load_dotenv()
+
+CHANNEL =      yaml.safe_load(open("slack.yaml"))["slack"]["alerts_channel"] 
 
 DM_TOL = 1.0      # pc/cc, max DM difference to call two candidates the same
 SEC_TOL = 0.01    # s, max time difference to call two candidates the same
@@ -111,16 +116,39 @@ def read_fil(path, nsamples=None, start=0):
             else:
                 raise ValueError(f"Unknown header key: {key}")
 
-        dtype = np.dtype({8: np.uint8, 16: np.uint16, 32: np.float32}[hdr["nbits"]])
+        #dtype = np.dtype({8: np.uint8, 16: np.uint16, 32: np.float32}[hdr["nbits"]])
+        nbits = hdr["nbits"]
+            
+    
         nifs, nchans = hdr["nifs"], hdr["nchans"]
-        sample_bytes = nifs * nchans * dtype.itemsize
+        #sample_bytes = nifs * nchans * dtype.itemsize
+        if nbits in (1, 2, 4):
+            # packed samples: 8//nbits values per byte, first value in the lowest bits
+            per_byte = 8 // nbits
+            if (nifs * nchans) % per_byte:
+                raise ValueError(f"nifs*nchans must be a multiple of {per_byte} for nbits={nbits}")
+            sample_bytes = nifs * nchans // per_byte
+            f.seek(start * sample_bytes, 1)          # skip `start` samples
+            count = -1 if nsamples is None else nsamples * sample_bytes
+            raw = np.fromfile(f, dtype=np.uint8, count=count)
+            raw = raw[: raw.size // sample_bytes * sample_bytes]
+            shifts = (np.arange(per_byte) * nbits).astype(np.uint8)
+            data = ((raw[:, None] >> shifts) & (2 ** nbits - 1)).astype(np.uint8).reshape(-1)
+        else:
+            dtype = np.dtype({8: np.uint8, 16: np.uint16, 32: np.float32}[nbits])
+            sample_bytes = nifs * nchans * dtype.itemsize        
 
-        f.seek(start * sample_bytes, 1)          # skip `start` samples
-        count = -1 if nsamples is None else nsamples * nifs * nchans
-        data = np.fromfile(f, dtype=dtype, count=count)
+
+        #f.seek(start * sample_bytes, 1)          # skip `start` samples
+        #count = -1 if nsamples is None else nsamples * nifs * nchans
+        #data = np.fromfile(f, dtype=dtype, count=count)
+            f.seek(start * sample_bytes, 1)          # skip `start` samples
+            count = -1 if nsamples is None else nsamples * nifs * nchans
+            data = np.fromfile(f, dtype=dtype, count=count)
+
 
     data = data.reshape(-1, nifs, nchans)        # (time, ifs, freq)
-    data    =   data[:,0].T 
+    data    =   data[:,0].T
     data    =   (data - np.nanmean(data, axis=1)[:,None])/np.std(data, axis=1)[:,None]
     return hdr, data
 
@@ -605,7 +633,8 @@ def plot_cands(cluster_file,
                 time_res,
                 #highlight_beams,
                 out_dir=None, 
-                show=False) -> None:
+                show=False, 
+                slack=0):
     """
     Generate TransientX-style candidate plots (e.g. to push to Mattermost).
 
@@ -753,13 +782,25 @@ def plot_cands(cluster_file,
         fig.align_ylabels([ax[1], ax[2]])
         fig.subplots_adjust(left=0.10, right=0.97, top=0.97, bottom=0.06)
 
+        save_path       =       os.path.join(
+                                    out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")
         if out_dir:
-            fig.savefig(os.path.join(
-                out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png"))
+            fig.savefig(save_path)
         if show:
             plt.show()   # not show(): the `show` argument shadows the function
         close(fig)
-    return None
+        
+        print(f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")
+        print(f"Pushing to slack : {slack}")
+        if(slack):
+            print("Pushing cands to slack")
+            push_png(save_path,
+                CHANNEL,
+                comment="testing")
+
+
+
+    return os.path.join(out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")
 
 
 def plot_cands_old(cluster_file, 
