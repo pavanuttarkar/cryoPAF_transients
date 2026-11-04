@@ -40,7 +40,7 @@ def main():
     cand_file   =       plot_cands(args.file, 
                                 args.filterbank, 
                                 args.window, 
-                                time_res=args.dt, 
+                                time_res=args.dt * 1e-3, 
                                 out_dir=args.out_dir, 
                                 slack=args.slack)
 

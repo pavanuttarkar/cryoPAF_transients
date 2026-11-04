@@ -86,7 +86,7 @@ Posting the plots to slack will require the channel ID and slack token (only acc
 
 
 ![Example candidate output](FIGURES/cand_0001_DM52.44_SN17.8.png)
-*Figure 2: A graphical overview of the candidate pipeline*
+*Figure 2: A example candidate plot*
 
  
 

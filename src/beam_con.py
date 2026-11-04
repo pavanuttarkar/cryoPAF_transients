@@ -1,4 +1,4 @@
-from utils import beam_coincidence 
+from src.utils import beam_coincidence 
 
 def main():
     """
