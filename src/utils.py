@@ -20,7 +20,7 @@ from src.header import *
 
 load_dotenv()
 
-CHANNEL =      yaml.safe_load(open("slack.yaml"))["slack"]["alerts_channel"] 
+CHANNEL =      yaml.safe_load(open("config/slack.yaml"))["slack"]["alerts_channel"] 
 
 DM_TOL = 1.0      # pc/cc, max DM difference to call two candidates the same
 SEC_TOL = 0.01    # s, max time difference to call two candidates the same
@@ -58,15 +58,24 @@ CAND_DTYPE_CLS_BEAM = np.dtype(NEW_CAND_DTYPE.descr + [("beams", "O")])
 
 client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
+
+def dict_to_blocks(data: dict, title: str = "") -> list:
+    """Slack Markdown conversion"""
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}}] if title else []
+    fields = [{"type": "mrkdwn", "text": f"*{k}*\n{v}"} for k, v in data.items()]
+    for i in range(0, len(fields), 10):  # Slack allows max 10 fields per section
+        blocks.append({"type": "section", "fields": fields[i:i + 10]})
+    return blocks
+
 def slack_read(fil_path, comment):
     paths = glob.glob(f"{fil_path}/*.png")
     print(paths)
     for i in range(len(paths)):
         push_png(f"{paths[i]}", f"{CHANNEL}", comment=f"{comment}")
   
-
 def push_png(path: str, 
             channel_id: str, 
+            message_block: str,
             comment: str = "") -> None:
     """
         Upload a single PNG to a channel (channel_id like 'C0123456789').
@@ -75,6 +84,11 @@ def push_png(path: str,
     if p.suffix.lower() != ".png" or not p.is_file():
         raise ValueError(f"Not a PNG file: {path}")
     try:
+        resp = client.chat_postMessage(
+                                    channel=channel_id,
+                                    #text=title,                        # fallback text
+                                    blocks=message_block,
+                                    )
         client.files_upload_v2(
             channel=channel_id,
             file=str(p),
@@ -86,7 +100,7 @@ def push_png(path: str,
     except SlackApiError as e:
         print(f"Slack error for {p.name}: {e.response['error']}", file=sys.stderr)
         raise
- 
+
 
 
 def dump_npy(file, save_file) -> None:
@@ -281,6 +295,27 @@ def dedisperse_kernel_simple(data, delays, out):
 
 @njit(
     parallel=True,
+    cache=True,
+    nogil=True,
+    boundscheck=False,
+)
+def dedisperse_spectrum_kernel(data, delays, out):
+    """Shift each channel by its delay without summing (dedispersed dynamic spectrum)."""
+    nchans, nsamples = data.shape
+    nout = out.shape[1]
+    for c in prange(nchans):
+        s = delays[c]
+        tmax = max(min(nout, nsamples - s), 0)
+        row_in = data[c]
+        row_out = out[c]
+        for t in range(tmax):
+            row_out[t] = row_in[t + s]
+        for t in range(tmax, nout):
+            row_out[t] = np.nan
+
+
+@njit(
+    parallel=True,
     fastmath={"reassoc", "contract"},
     cache=True,
     nogil=True,
@@ -432,36 +467,45 @@ def dm_transform(data, hdr, dm_min, dm_max, dm_step, skip_nan=False):
     logger.info("Kernel finished in %.3f s (%.2f Gadd/s)", dt, gflop / dt)
     return out.T, dms
 
-
-def dedisperse_dm(data, hdr, dm, nout=None, skip_nan=False):
+def dedisperse_dm(data, hdr, dm, nout=None, skip_nan=False,
+                  return_spectrum=False, pad_nan=False, return_both=False):
     data = np.asarray(data)
-    
+
     if data.ndim != 2:
         raise ValueError(f"data must be 2-D (nchans, nsamples), got shape {data.shape}")
-    
+
     nchans, nsamples = data.shape
     delays = delay_table(hdr, [dm])
     max_delay = int(delays.max())
-    
+
     if nsamples <= max_delay:
         logger.error("Not enough samples: need > %d for DM %.3f, got %d", max_delay, dm, nsamples)
         raise ValueError(f"Need more than {max_delay} samples for DM {dm}, got {nsamples}")
     complete = nsamples - max_delay
-    
+
     if nout is None:
-        nout = complete
-    elif nout > complete:
+        nout = nsamples if pad_nan else complete
+    elif nout > complete and not pad_nan:
         logger.warning("nout=%d > %d complete samples at DM %.3f", nout, complete, dm)
-    
 
     nout = min(nout, nsamples)
     data = np.ascontiguousarray(data, dtype=np.float32)
+
+    spec = None
+    if return_spectrum or return_both:
+        spec = np.empty((nchans, nout), dtype=np.float32)
+        dedisperse_spectrum_kernel(data, np.ascontiguousarray(delays[0]), spec)
+        if not return_both:
+            return spec
+
     out = np.empty((1, nout), dtype=np.float32)
     _run_kernel(data, delays, out, skip_nan)
-    #print(data.shape, out.shape)
-    
-    return out[0]
+    if pad_nan:
+        out[0, complete:] = np.nan
 
+    if return_both:
+        return out[0], spec
+    return out[0]
 
 # ---------------------------------------------------------------------------
 # 3. Compute delay and read the required samples
@@ -626,8 +670,227 @@ def get_dispersed(data, hdr, window, nf_out=128, nt_out=1024):
     return disp, freqs, ntc
 
 
-
 def plot_cands(cluster_file, 
+                main_fil_path, 
+                window, 
+                time_res,
+                #highlight_beams,
+                out_dir=None, 
+                show=False, 
+                slack=0):
+    """
+    Generate TransientX-style candidate plots (e.g. to push to Mattermost).
+
+    cluster_file : (str) clustered candidate file
+    fil_path     : (str) filterbank file
+    window       : (int) MINIMUM samples per plot; expanded to 2 * max_delay
+                   when the DM sweep would not fit
+    time_res     : (float) sample time in seconds
+    out_dir      : (str) if given, save PDFs there
+    show         : (bool) show() each candidate
+    """
+    #cls_cands = np.atleast_1d(np.loadtxt(f"{cluster_file}", dtype=CAND_DTYPE_CLS))
+    cls_cands   =   np.atleast_1d(read_beam_cands(f"{cluster_file}", 
+                                    dtype=CAND_DTYPE_CLS_BEAM))
+    
+
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    for i in range(len(cls_cands)):
+
+        #Reading the beams from file
+        highlight_beams     =       cls_cands['beams'][i]
+
+
+        #Reading the beam file:
+        #Need to pick the right beam:
+        print(main_fil_path[:-5], cls_cands['beams'][0][0], highlight_beams[0])
+        fil_path    = f"{main_fil_path[:-5]}{int(cls_cands['beams'][i][0])}.fil"
+        print(fil_path)
+
+
+        hdr         = _read_header(fil_path)
+        nchans      = hdr["nchans"]
+        bw          = abs(hdr["foff"]) * nchans
+        fcen        = hdr["fch1"] + hdr["foff"] * (nchans - 1) / 2.0
+        
+        
+        c  = cls_cands[i]
+        dm = c["dm"]
+
+        # `window` is a floor: the candidate sits at nwin//2 and the sweep runs
+        # max_delay samples past it, so expand when it would overrun the panel.
+        max_delay   = max_delay_samples(hdr, dm)
+        nwin        = max(window, 2 * max_delay)
+
+        start                   = start_for_candidate(hdr, 
+                                                    c["sampno"], 
+                                                    dm, 
+                                                    nwin,
+                                                    f_ref=channel_freqs(hdr).min(), 
+                                                    pad=True)          
+        hdr_i, data, max_delay  = read_for_dm(fil_path, 
+                                                start, 
+                                                nwin, 
+                                                0.0, 
+                                                2 * dm, 
+                                                pad=True)   
+
+        trials, dms             = dm_transform(data, 
+                                                hdr_i, 
+                                                0.0, 
+                                                2 * dm, 
+                                                1.0)
+
+        series, spec            = dedisperse_dm(data, 
+                                                hdr_i, 
+                                                dm, 
+                                                nout=trials.shape[0], 
+                                                skip_nan=True, 
+                                                return_both=True)   
+
+
+        time     = np.arange(nwin) * time_res
+        width_ms = c["boxcar"] * time_res * 1e3
+
+        centre   = nwin // 2
+        half     = max(4 * int(c["boxcar"]), 32)
+        lo, hi   = max(0, centre - half), min(len(series), centre + half)
+        tpeak    = time[lo + int(np.nanargmax(series[lo:hi]))]
+
+        #time     = np.arange(window) * time_res
+        #width_ms = c["boxcar"] * time_res * 1e3
+    
+        #centre   = window // 2
+        #half     = max(4 * int(c["boxcar"]), 32)
+        #lo, hi   = max(0, centre - half), min(len(series), centre + half)
+        #tpeak    = time[lo + int(np.nanargmax(series[lo:hi]))]
+
+        disp, d_f, ntc = get_dispersed(data, hdr_i, nwin)
+
+
+        # ---- text columns for the info row ----
+        col1 = (#"CANDIDATE\n---------\n"
+                f"fredda S/N    : {c['sn']:.2f}\n"
+                f"DM (pc cm^-3) : {dm:.3f}\n"
+                f"Time (s)      : {c['secs']:.4f}\n"
+                f"Sample no.    : {int(c['sampno'])}\n"
+                f"Peak time     : {tpeak:.4f} s\n"#)
+                f"Boxcar        : {int(c['boxcar'])} samp\n"
+                f"Width         : {width_ms:.2f} ms\n"
+                f"IDT           : {int(c['idt'])}\n"
+                f"Beam          : {int(c['beamno'])}\n"
+                #f"Class         : {int(c['cls'])}\n"
+                #f"N cands       : {int(c['ncands'])}\n"
+                f"Nbits/Nifs    : {hdr['nbits']}/{hdr['nifs']}\n"
+                f"BW / fcen     : {bw:.0f} / {fcen:.0f} MHz\n")
+        col3 = (#"HEADER\n------\n"
+                f"Source        : {hdr['source_name']}\n"
+                f"Telescope     : {TELESCOPE}\n"
+                f"Machine       : {hdr['machine_id']}\n"
+                f"Tstart MJD    : {hdr['tstart']:.6f}\n"
+                f"Cand MJD      : {c['mjd']:.8f}\n"#)
+                f"Tsamp         : {hdr['tsamp']*1e3:.2f} ms\n"
+                f"Nchans        : {nchans}\n"
+                f"fch1/foff     : {hdr['fch1']:.1f}/{hdr['foff']:.1f} MHz\n"
+                f"File          : {os.path.basename(fil_path)}\n")
+
+        slack_str       =       {
+                                "S/N"  : f"{c['sn']:.2f}", 
+                                "DM"    : f"{dm:.3f} pc cm^-3", 
+                                "MJD"   : f"{c['mjd']:.8f}", 
+                                "fch1"  : f"{hdr['fch1']:.1f}/{hdr['foff']:.1f} MHz", 
+                                "BW"    : f"{bw:.0f} / {fcen:.0f} MHz",
+                                "Boxcar": f"{int(c['boxcar'])}",
+                                }
+        fig, ax = subplots(
+                        nrows=4, 
+                        ncols=1,
+                        figsize=(11, 14),
+                        gridspec_kw={"height_ratios": [1.0, 0.7, 1., 1.0], "hspace": 0}
+                        )
+
+        # row 0: info text (left) + beam footprint inset (right)
+        ax[0].axis("off")
+        for x, y, txt in [(0.00, 1.00, col1), 
+                          (0.30, 1.00, col3),
+                          #(0.00, 0.50, col3), 
+                          #(0.30, 0.50, col3)
+                         ]:
+    
+            ax[0].text(x, y, 
+                        txt, 
+                        va="top", 
+                        ha="left", 
+                        family="monospace",
+                        fontsize=11, 
+                        transform=ax[0].transAxes)
+        
+
+        ax_beam = ax[0].inset_axes([0.67, 0.36, 0.42, 0.68])
+        plot_beam_footprint(ax_beam, 
+                            highlight=highlight_beams, 
+                            title="FRB beams")
+   
+
+
+
+        ax[3].imshow(disp, aspect="auto", origin="lower", cmap="viridis",
+                     extent=[time[0], time[ntc - 1], d_f[0], d_f[-1]],
+                     interpolation="nearest",
+                     vmin=np.nanpercentile(disp, 1),
+                     vmax=np.nanpercentile(disp, 99.5))
+        ax[3].axvline(tpeak, color="tab:red", ls="--", lw=0.8, alpha=0.6)
+        ax[3].set_xlim(time[0], time[-1])
+        ax[3].set_xlabel("Time (s)")
+        ax[3].set_ylabel("Frequency (MHz)")
+        ax[2].sharex(ax[1])      # was ax[2].sharex(ax[2])
+        ax[3].sharex(ax[1])
+        ax[2].tick_params(labelbottom=False)
+ 
+        # row 2: dedispersed pulse, row 3: DM-time (touching, shared x)
+        #ax[2].sharex(ax[2])
+        ax[1].plot(time, series, color="k", lw=1.2)
+        ax[1].axvline(tpeak, color="tab:red", ls="--", lw=0.8, alpha=0.6)
+        ax[1].set_xlim(time[0], time[-1])
+        ax[1].set_ylabel("Amplitude")
+        ax[1].tick_params(labelbottom=False)
+
+        ax[2].imshow(trials.T, aspect="auto", origin="lower", cmap="viridis",
+                     extent=[time[0], time[-1], dms[0], dms[-1]],
+                     interpolation="nearest")
+        ax[2].axhline(dm, color="w", ls=":", lw=0.6, alpha=0.5)
+        ax[2].set_ylabel(r"DM (pc cm$^{-3}$)")
+        ax[2].set_xlabel("Time (s)")
+
+
+
+
+        fig.align_ylabels([ax[1], ax[2]])
+        fig.subplots_adjust(left=0.10, right=0.97, top=0.97, bottom=0.06)
+
+        save_path       =       os.path.join(
+                                    out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")
+        if out_dir:
+            fig.savefig(save_path)
+        if show:
+            plt.show()   # not show(): the `show` argument shadows the function
+        close(fig)
+
+        print(f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")
+        print(f"Pushing to slack : {slack}")
+        if(slack):
+            print("Pushing cands to slack")
+            push_png(save_path,
+                CHANNEL,
+                message_block=dict_to_blocks(slack_str, "NEW CAND! :party_parrot:"), 
+                comment="TESTING")
+
+
+    return os.path.join(out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")
+
+def plot_cands_ason_NOV03_2026(cluster_file, 
                 main_fil_path, 
                 window, 
                 time_res,
@@ -675,16 +938,47 @@ def plot_cands(cluster_file,
         c  = cls_cands[i]
         dm = c["dm"]
 
-        start = start_for_candidate(hdr, c["sampno"], dm, window,
-                                    f_ref=channel_freqs(hdr).min(), pad=True)          # <-- changed
-        print(fil_path, start, window, 0.0, 2 * dm)
-        hdr_i, data, max_delay  = read_for_dm(fil_path, start, window, 0.0, 2 * dm, pad=True)   # <-- changed
-        trials, dms             = dm_transform(data, hdr_i, 0.0, 2 * dm, 1.0)
-        series                  = dedisperse_dm(data, hdr_i, dm, nout=trials.shape[0], skip_nan=True)   # <-- changed
+        start = start_for_candidate(hdr, 
+                                    c["sampno"], 
+                                    dm, 
+                                    window,
+                                    f_ref=channel_freqs(hdr).min(), 
+                                    pad=True)          # <-- changed
+        hdr_i, data, max_delay  = read_for_dm(fil_path, 
+                                                start, 
+                                                window, 
+                                                0.0, 
+                                                2 * dm, 
+                                                pad=True)   # <-- changed
+
+        trials, dms             = dm_transform(data, 
+                                                hdr_i, 
+                                                0.0, 
+                                                2 * dm, 
+                                                1.0)
+
+        series                  = dedisperse_dm(data, 
+                                                hdr_i, 
+                                                dm, 
+                                                nout=trials.shape[0], 
+                                                skip_nan=True)   # <-- changed
+
 
         time     = np.arange(window) * time_res
-        tpeak    = time[np.argmax(series)]
         width_ms = c["boxcar"] * time_res * 1e3
+
+        centre   = window // 2
+        half     = max(4 * int(c["boxcar"]), 32)
+        lo, hi   = max(0, centre - half), min(len(series), centre + half)
+        tpeak    = time[lo + int(np.nanargmax(series[lo:hi]))]
+
+        #time     = np.arange(window) * time_res
+        #width_ms = c["boxcar"] * time_res * 1e3
+    
+        #centre   = window // 2
+        #half     = max(4 * int(c["boxcar"]), 32)
+        #lo, hi   = max(0, centre - half), min(len(series), centre + half)
+        #tpeak    = time[lo + int(np.nanargmax(series[lo:hi]))]
 
         disp, d_f, ntc = get_dispersed(data, hdr_i, window)
 
