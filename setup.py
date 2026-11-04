@@ -40,7 +40,8 @@ setup(
         "Programming Language :: Python :: 3.12",
     ],
     keywords="cryoPAF, FRB, transients",
-    packages=find_packages(exclude=["tests", "tests.*"]),
+    packages=find_packages(include=["src", "src.*"], 
+                        exclude=["tests", "tests.*"]),
     python_requires=">=3.9",
     install_requires=read_requirements("requirements.txt"),    
     extras_require={
