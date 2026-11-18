@@ -55,7 +55,8 @@ setup(
         "console_scripts": [
             "run_cand_pipe=src.run_cand_pipe:main",
             "beam_con=src.beam_con:main",
-            "plot_cands=src.plot_cands:main",
+            "plot_cands=src.plot_cands:main", 
+            "frb_inject=src.injections.frb_injection:main"
         ],
     },
     include_package_data=True,
