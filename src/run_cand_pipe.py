@@ -13,7 +13,7 @@ def main():
     p = argparse.ArgumentParser(description="Cluster FREDDA/FDMT candidates.")
     p.add_argument("-f",                                                            
                     "--file",                                                       
-                    required=True,                                                  
+                    #required=True,                                                  
                     help="candidate file (S/N sampno secs boxcar idt dm beam mjd)") 
     p.add_argument("--dt",                                                          
                     type=float,                                                     
@@ -93,7 +93,8 @@ def main():
                                              dt=args.dt * 1e-3,
                                              eps=args.eps,
                                              min_samples=args.min_samples, 
-                                             udp=args.udp)
+                                             udp=args.udp, 
+                                            npackets=0)
     else:
         fredda_cands, labels, beams = cluster_mb(args.file,
                                              dt=args.dt * 1e-3,
