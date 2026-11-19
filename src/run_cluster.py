@@ -9,11 +9,13 @@ def cluster_mb(path,
                 eps=1.0, 
                 min_samples=2):
     cands, disp =   load_fredda(path, dt)
-    beams       =   np.unique(cands[0]['beamno'])
+    beams       =   np.unique(cands['beamno'])
+    #beams       =   np.unique(cands[0]['beamno'])
     cls_cands   =   []
     
     for i in range(len(beams)):
-        fredda_temp = cands[0][np.where(cands[0]['beamno']==i)[0]]
+        fredda_temp = cands[cands['beamno'] == beams[i]]
+        #fredda_temp = cands[0][np.where(cands[0]['beamno']==i)[0]]
         cls_cands.append(cluster_fdmt(fredda_temp, 
                                      dt, 
                                      disp, 

@@ -677,7 +677,8 @@ def plot_cands(cluster_file,
                 #highlight_beams,
                 out_dir=None, 
                 show=False, 
-                slack=0):
+                slack=0, 
+                comment=""):
     """
     Generate TransientX-style candidate plots (e.g. to push to Mattermost).
 
@@ -885,7 +886,7 @@ def plot_cands(cluster_file,
             push_png(save_path,
                 CHANNEL,
                 message_block=dict_to_blocks(slack_str, "NEW CAND! :party_parrot:"), 
-                comment="TESTING")
+                comment=comment)
 
 
     return os.path.join(out_dir, f"cand_{i:04d}_DM{dm:.2f}_SN{c['sn']:.1f}.png")

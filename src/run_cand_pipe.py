@@ -1,5 +1,5 @@
 import argparse
-from src.run_cluster_numba import * 
+from src.run_cluster_udp import * 
 from src.pulsar_crossmatch import read_beam_positions, \
                               attach_beam_coords, \
                               crossmatch, \
@@ -65,7 +65,7 @@ def main():
                     type=float, 
                     default=None, 
                     dest="dm_abs_tol",
-                   help="Absolute DM tolerance in % (overrides --dm-tol if set)")
+                   help="Absolute DM tolerance in %% (overrides --dm-tol if set)")
     p.add_argument("--out",
                     default="matches.csv",
                     help="Output CSV path for matches (default: matches.csv)")
@@ -79,18 +79,28 @@ def main():
     p.add_argument("--npy_file", 
                     default=1,
                     help="Use npy files? Default=1")
-
-
+    p.add_argument("--udp",
+                    default=None,
+                    help="UD port if using UDP, e.g., 127.0.0.0:5001")
 
 
 
     args = p.parse_args()
 
-
-    fredda_cands, labels, beams = cluster_mb(args.file,
+    
+    if(args.udp!=None):
+        fredda_cands, labels, beams = cluster_mb(args.file,
                                              dt=args.dt * 1e-3,
                                              eps=args.eps,
-                                             min_samples=args.min_samples)
+                                             min_samples=args.min_samples, 
+                                             udp=args.udp)
+    else:
+        fredda_cands, labels, beams = cluster_mb(args.file,
+                                             dt=args.dt * 1e-3,
+                                             eps=args.eps,
+                                             min_samples=args.min_samples, 
+                                             )
+
 
     for b in beams:
         lab = labels[fredda_cands['beamno'] == b]
