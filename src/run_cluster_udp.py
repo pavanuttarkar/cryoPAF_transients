@@ -4,6 +4,7 @@ import math
 import socket
 import struct
 import sys
+import time
 import numpy as np
 from numba import njit
 from src.header import *
@@ -73,6 +74,34 @@ def read_packets(sock, max_packets=100, timeout=10.0, bufsize=65535):
     if not chunks:
         return np.empty(0, dtype=CAND_DTYPE)
     return np.concatenate(chunks)
+
+
+def read_for(sock, seconds, bufsize=65535):
+    """Read datagrams from an already-open socket for `seconds` of wall time.
+    Returns (candidates, stopped); stopped is True if Ctrl+C was pressed."""
+    end = time.monotonic() + seconds
+    chunks = []
+    stopped = False
+    while True:
+        left = end - time.monotonic()
+        if left <= 0:
+            break
+        sock.settimeout(left)
+        try:
+            data, addr = sock.recvfrom(bufsize)
+        except socket.timeout:
+            break
+        except KeyboardInterrupt:
+            stopped = True
+            break
+        try:
+            chunks.append(parse_packet(data))
+        except ValueError as err:
+            print(f"skipping bad packet from {addr}: {err}", file=sys.stderr)
+
+    if not chunks:
+        return np.empty(0, dtype=CAND_DTYPE), stopped
+    return np.concatenate(chunks), stopped
 
 
 def load_udp(hostport, dt, max_packets=100, timeout=10.0):
@@ -176,12 +205,23 @@ def cluster_fdmt(fredda_cands, dt, disp, eps=1.0, min_samples=2):
     return labels
 
 
-def cluster_mb(path, dt, eps=1.0, min_samples=2, udp=None, npackets=100, timeout=10.0):
+def cluster_mb(path, 
+                dt, 
+                eps=1.0, 
+                min_samples=2, 
+                udp=None, 
+                npackets=100, 
+                timeout=10.0,
+                cands=None, 
+                disp=None):
     """Cluster each beam independently. Returns (cands, labels, beams).
     Cluster ids are unique across beams, -1 means noise.
     path is the candidate text file. If udp="HOST:PORT" is given, candidates are read
-    from that socket instead and path is ignored (pass None)."""
-    if udp is None:
+    from that socket instead and path is ignored (pass None).
+    If cands (and disp) are given, that array is clustered and path/udp are ignored."""
+    if cands is not None:
+        pass                                                # already in memory (UDP interval mode)
+    elif udp is None:
         cands, disp = load_fredda(path, dt)
     else:
         cands, disp = load_udp(udp, dt, npackets, timeout)
